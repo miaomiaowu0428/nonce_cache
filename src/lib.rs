@@ -6,9 +6,13 @@ use {
     grpc_client::TransactionFormat,
     log::{error, info},
     solana_client::nonblocking::rpc_client::RpcClient,
-    solana_sdk::{hash::Hash, pubkey::Pubkey, signature::Signature, signer::Signer},
+    solana_sdk::{
+        commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey, signature::Signature,
+        signer::Signer,
+    },
     std::{
         collections::{HashMap, HashSet},
+        env,
         sync::{Arc, LazyLock, RwLock},
     },
     tokio::{self, sync::OnceCell},
@@ -36,12 +40,19 @@ global_broadcast! {
 
 // Replace with your QuickNode Yellowstone gRPC endpoint
 const ENDPOINT: LazyLock<String> = LazyLock::new(|| {
-    std::env::var("YELLOWSTONE_GRPC_URL").unwrap_or_else(|e| {
+    std::env::var("YELLOWSTONE_GRPC_URL").unwrap_or_else(|_| {
         info!("YELLOWSTONE_GRPC_URL not set, using default endpoint");
         "http://localhost:10000".to_string()
     })
 });
-// const AUTH_TOKEN: &str = "your-auth-token"; // 👈 Replace with your token
+
+pub static JSON_RPC_CLIENT: LazyLock<Arc<RpcClient>> = LazyLock::new(|| {
+    let url = env::var("JSON_RPC_URL").expect("JSON_RPC_URL not set");
+    Arc::new(RpcClient::new_with_commitment(
+        url,
+        CommitmentConfig::processed(),
+    ))
+});
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TradeStatus {
@@ -62,51 +73,46 @@ struct NonceInfo {
 }
 
 /// 缓存Nonce hash
-static NONCE_CACHE: OnceCell<Arc<RwLock<NonceInfo>>> = OnceCell::const_new();
+static NONCE_CACHE: LazyLock<RwLock<NonceInfo>> =
+    LazyLock::new(|| RwLock::new(NonceInfo::default()));
 
-async fn init_nonce_cache(
-    json_rpc_client: &RpcClient,
-    nonce_account: &Pubkey,
-) -> Arc<RwLock<NonceInfo>> {
-    NONCE_CACHE
-        .get_or_init(|| async {
-            // 查询hash更新
-            let account = json_rpc_client
-                .get_account(&nonce_account)
-                .await
-                .expect("获取nonce 账户失败");
-            let data = account.data;
-            let hash = Hash::try_from_slice(&data[40..72]).expect("Failed to parse hash");
+async fn init_nonce_cache(nonce_account: &Pubkey) {
+    let cache = &*NONCE_CACHE;
+    let current = cache.read().unwrap();
 
-            Arc::new(RwLock::new(NonceInfo {
-                pre_hash: hash,
-                cur_hash: hash,
-            }))
-        })
-        .await
-        .clone()
+    if current.pre_hash == Hash::default() && current.cur_hash == Hash::default() {
+        drop(current);
+        let account = JSON_RPC_CLIENT
+            .get_account(nonce_account)
+            .await
+            .expect("获取 nonce 账户失败");
+        let data = account.data;
+        let hash = Hash::try_from_slice(&data[40..72]).expect("解析 hash 失败");
+
+        let mut cache_mut = cache.write().unwrap();
+        cache_mut.pre_hash = hash;
+        cache_mut.cur_hash = hash;
+    }
 }
 
-pub async fn get_nonce_hash(json_rpc_client: &RpcClient, nonce_account: &Pubkey) -> Hash {
-    let _cache = init_nonce_cache(json_rpc_client, nonce_account).await; // 保证初始化一次
-    let read = NONCE_CACHE.get().unwrap().read().unwrap();
+pub async fn get_nonce_hash(nonce_account: &Pubkey) -> Hash {
+    let _cache = init_nonce_cache(nonce_account).await; // 保证初始化一次
+    let read = NONCE_CACHE.read().unwrap();
     read.cur_hash
 }
 
 pub async fn update_nonce_hash(hash: Hash) {
-    let mut write = NONCE_CACHE.get().unwrap().write().unwrap();
+    let mut write = NONCE_CACHE.write().unwrap();
     (write.pre_hash, write.cur_hash) = (write.cur_hash, hash);
 }
 
 pub async fn subscribe_nonce_and_transaction(
-    json_rpc_client: &RpcClient,
     nonce_account: &Pubkey,
     payer_pubkey: &Pubkey,
 ) -> Result<(), anyhow::Error> {
-    let _ = init_nonce_cache(json_rpc_client, nonce_account).await;
+    let _ = init_nonce_cache(nonce_account).await;
 
-    let account = "QncegE1ZuSnsAj9wyhBTcWwsN5xqqxA3sXmPB3cSTHm".to_string();
-    info!("Starting to monitor account: {}", account);
+    info!("Starting to monitor account: {}", nonce_account);
     info!("Starting to monitor payer: {}", payer_pubkey);
 
     let mut client = setup_client().await?;
@@ -117,7 +123,7 @@ pub async fn subscribe_nonce_and_transaction(
             "subscribe nonce account".to_string(),
             SubscribeRequestFilterAccounts {
                 account: vec![
-                    account.clone(),
+                    // account.clone(),
                     payer_pubkey.to_string(),
                     nonce_account.to_string(),
                 ],
@@ -130,7 +136,7 @@ pub async fn subscribe_nonce_and_transaction(
             "transaction subscribe".to_string(),
             SubscribeRequestFilterTransactions {
                 account_include: vec![
-                    account,
+                    // account,
                     payer_pubkey.to_string(),
                     nonce_account.to_string(),
                 ],
