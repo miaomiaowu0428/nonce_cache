@@ -12,9 +12,9 @@ use {
     std::{
         collections::{HashMap, HashSet},
         env,
-        sync::{Arc, LazyLock, RwLock},
+        sync::{Arc, LazyLock},
     },
-    tokio::{self},
+    tokio::{self, sync::RwLock},
     tonic::{service::Interceptor, transport::ClientTlsConfig},
     utils::global_broadcast,
     yellowstone_grpc_client::GeyserGrpcClient,
@@ -71,37 +71,51 @@ struct NonceInfo {
     pub cur_hash: Hash,
 }
 
+static NONCE_ACCOUNT_KEY: LazyLock<RwLock<Pubkey>> =
+    LazyLock::new(|| RwLock::new(Pubkey::default()));
+
+async fn init_nonce_account_key(nonce_account: Pubkey) {
+    let mut key = NONCE_ACCOUNT_KEY.write().await;
+    if *key != Pubkey::default() {
+        return;
+    }
+    *key = nonce_account;
+}
+
 /// 缓存Nonce hash
 static NONCE_CACHE: LazyLock<RwLock<NonceInfo>> =
     LazyLock::new(|| RwLock::new(NonceInfo::default()));
 
-async fn init_nonce_cache(nonce_account: &Pubkey) {
+async fn init_nonce_cache() {
     let cache = &*NONCE_CACHE;
-    let current = cache.read().unwrap();
 
-    if current.pre_hash == Hash::default() && current.cur_hash == Hash::default() {
-        drop(current);
+    if {
+        let current = cache.read().await;
+        current.pre_hash == Hash::default() && current.cur_hash == Hash::default()
+    } {
         let account = JSON_RPC_CLIENT
-            .get_account(nonce_account)
+            .get_account(&*NONCE_ACCOUNT_KEY.read().await)
             .await
             .expect("获取 nonce 账户失败");
         let data = account.data;
-        let hash = Hash::try_from_slice(&data[40..72]).expect("解析 hash 失败");
+        let Ok(hash) = Hash::try_from_slice(&data[40..72]) else {
+            return;
+        };
 
-        let mut cache_mut = cache.write().unwrap();
-        cache_mut.pre_hash = hash;
+        let mut cache_mut = cache.write().await;
+        cache_mut.pre_hash = cache_mut.cur_hash;
         cache_mut.cur_hash = hash;
     }
 }
 
-pub async fn get_nonce_hash(nonce_account: &Pubkey) -> Hash {
-    let _cache = init_nonce_cache(nonce_account).await; // 保证初始化一次
-    let read = NONCE_CACHE.read().unwrap();
+pub async fn get_nonce_hash() -> Hash {
+    let _cache = init_nonce_cache().await; // 保证初始化一次
+    let read = NONCE_CACHE.read().await;
     read.cur_hash
 }
 
 pub async fn update_nonce_hash(hash: Hash) {
-    let mut write = NONCE_CACHE.write().unwrap();
+    let mut write = NONCE_CACHE.write().await;
     (write.pre_hash, write.cur_hash) = (write.cur_hash, hash);
 }
 
@@ -109,7 +123,8 @@ pub async fn subscribe_nonce_and_transaction(
     nonce_account: &Pubkey,
     payer_pubkey: &Pubkey,
 ) -> Result<(), anyhow::Error> {
-    let _ = init_nonce_cache(nonce_account).await;
+    init_nonce_account_key(*nonce_account).await;
+    let _ = init_nonce_cache().await;
 
     info!("Starting to monitor account: {}", nonce_account);
     info!("Starting to monitor payer: {}", payer_pubkey);
