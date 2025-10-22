@@ -8,14 +8,13 @@ use {
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_sdk::{
         commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey, signature::Signature,
-        signer::Signer,
     },
     std::{
         collections::{HashMap, HashSet},
         env,
         sync::{Arc, LazyLock, RwLock},
     },
-    tokio::{self, sync::OnceCell},
+    tokio::{self},
     tonic::{service::Interceptor, transport::ClientTlsConfig},
     utils::global_broadcast,
     yellowstone_grpc_client::GeyserGrpcClient,
