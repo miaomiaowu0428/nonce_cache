@@ -1,17 +1,29 @@
 use {
-    crate::tx_result_channel::TxResultEvent, anyhow, borsh::BorshDeserialize, futures::stream::StreamExt, grpc_client::TransactionFormat, log::{error, info}, solana_client::nonblocking::rpc_client::RpcClient, solana_commitment_config::CommitmentConfig, solana_sdk::{
-         hash::Hash, pubkey::Pubkey, signature::Signature,
-    }, std::{
+    crate::tx_result_channel::TxResultEvent,
+    anyhow,
+    borsh::BorshDeserialize,
+    futures::stream::StreamExt,
+    grpc_client::TransactionFormat,
+    log::{error, info},
+    solana_client::nonblocking::rpc_client::RpcClient,
+    solana_commitment_config::CommitmentConfig,
+    solana_sdk::{hash::Hash, pubkey::Pubkey, signature::Signature},
+    std::{
         collections::{HashMap, HashSet},
         env,
         sync::{Arc, LazyLock},
-    }, tokio::{self, sync::RwLock}, tonic::{service::Interceptor, transport::ClientTlsConfig}, utils::global_broadcast, yellowstone_grpc_client::GeyserGrpcClient, yellowstone_grpc_proto::{
+    },
+    tokio::{self, sync::RwLock},
+    tonic::{service::Interceptor, transport::ClientTlsConfig},
+    utils::global_broadcast,
+    yellowstone_grpc_client::GeyserGrpcClient,
+    yellowstone_grpc_proto::{
         geyser::{SubscribeRequestAccountsDataSlice, SubscribeRequestFilterAccounts},
         prelude::{
             CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions,
             subscribe_update::UpdateOneof,
         },
-    }
+    },
 };
 
 // 定义交易结果的全局广播 channel
@@ -19,6 +31,7 @@ global_broadcast! {
     mod tx_result_channel {
         struct TxResultEvent {
             signature: Signature,
+            tx: TransactionFormat,
             status: TradeStatus,
         }
     }
@@ -184,6 +197,7 @@ pub async fn subscribe_nonce_and_transaction(
                     let Some(meta) = &tx.meta else {
                         let event = tx_result_channel::TxResultEvent {
                             signature: sig,
+                            tx,
                             status: TradeStatus::Failed(
                                 "tx failed".to_string(),
                                 "meta not found".to_string(),
@@ -197,6 +211,7 @@ pub async fn subscribe_nonce_and_transaction(
                             info!("交易成功: {:?}", sig);
                             let event = tx_result_channel::TxResultEvent {
                                 signature: sig,
+                                tx,
                                 status: TradeStatus::Success(sig.clone()),
                             };
                             let _ = tx_result_channel::send(event);
@@ -207,6 +222,7 @@ pub async fn subscribe_nonce_and_transaction(
                             let meta_str = format!("{:?}", meta);
                             let event = tx_result_channel::TxResultEvent {
                                 signature: sig,
+                                tx,
                                 status: TradeStatus::Failed(tx_str, meta_str),
                             };
                             let _ = tx_result_channel::send(event);
@@ -255,14 +271,19 @@ pub async fn confirm_tx(
     mut tx_result_rx: tokio::sync::broadcast::Receiver<TxResultEvent>,
     expected_signatures: HashSet<Signature>,
     timeout_secs: u64,
-) -> Result<Signature, Box<dyn std::error::Error + Sync + Send>> {
-    let sig = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+) -> Result<(Signature, TransactionFormat), Box<dyn std::error::Error + Sync + Send>> {
+    let res = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         loop {
-            if let Ok(TxResultEvent { signature, status }) = tx_result_rx.recv().await {
+            if let Ok(TxResultEvent {
+                signature,
+                tx,
+                status,
+            }) = tx_result_rx.recv().await
+            {
                 if expected_signatures.contains(&signature) {
                     info!("交易确认: {:?} -> {:#?}", signature, status);
                     match status {
-                        TradeStatus::Success(_) => return Ok(signature),
+                        TradeStatus::Success(_) => return Ok((signature, tx)),
                         TradeStatus::Failed(_, _) => {
                             error!("交易失败: {:?}", signature);
                             return Err("交易失败".into());
@@ -277,8 +298,8 @@ pub async fn confirm_tx(
     })
     .await;
 
-    match sig {
-        Ok(Ok(signature)) => Ok(signature),
+    match res {
+        Ok(Ok((sig, tx))) => Ok((sig, tx)),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(format!("交易监听超时").into()),
     }
@@ -288,31 +309,36 @@ pub async fn confirm_success_tx(
     mut tx_result_rx: tokio::sync::broadcast::Receiver<TxResultEvent>,
     expected_signatures: HashSet<Signature>,
     timeout_secs: u64,
-) -> Result<Signature, Box<dyn std::error::Error + Sync + Send>> {
-    let sig = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+) -> Result<(Signature, TransactionFormat), Box<dyn std::error::Error + Sync + Send>> {
+    let res = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         loop {
-            if let Ok(TxResultEvent { signature, status }) = tx_result_rx.recv().await {
-                if expected_signatures.contains(&signature) {
-                    info!("交易确认: {:?} -> {:#?}", signature, status);
+            if let Ok(TxResultEvent {
+                signature: sig,
+                tx,
+                status,
+            }) = tx_result_rx.recv().await
+            {
+                if expected_signatures.contains(&sig) {
+                    info!("交易确认: {:?} -> {:#?}", sig, status);
                     match status {
-                        TradeStatus::Success(_) => return Ok(signature),
+                        TradeStatus::Success(_) => return Ok((sig, tx)),
                         TradeStatus::Failed(_, _) => {
                             // 只记录失败，但继续等待其他交易的成功
-                            error!("交易失败: {:?}，继续等待其他交易", signature);
+                            error!("交易失败: {:?}，继续等待其他交易", sig);
                             continue;
                         }
                     }
                 } else {
                     // 广播模式下，直接忽略不属于我们的交易结果
-                    info!("非本组交易, 忽略: {:?}", signature);
+                    info!("非本组交易, 忽略: {:?}", sig);
                 }
             }
         }
     })
     .await;
 
-    match sig {
-        Ok(Ok(signature)) => Ok(signature),
+    match res {
+        Ok(Ok((sig, tx))) => Ok((sig, tx)),
         Ok(Err(e)) => {
             error!("this should not happen, a loop should not return Err");
             Err(e)
