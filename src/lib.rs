@@ -137,10 +137,10 @@ pub async fn update_nonce_hash(nonce_account: Pubkey, new_hash: Hash) {
 }
 
 pub async fn subscribe_nonce_and_transaction(
-    nonce_accounts: &[Pubkey],
+    nonce_accounts: Vec<Pubkey>,
     payer_pubkey: Pubkey,
 ) -> Result<(), anyhow::Error> {
-    for nonce_account in nonce_accounts {
+    for nonce_account in &nonce_accounts {
         init_nonce(*nonce_account).await;
         info!("Starting to monitor account: {}", nonce_account);
     }
