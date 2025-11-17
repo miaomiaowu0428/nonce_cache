@@ -65,82 +65,100 @@ impl TradeStatus {
     }
 }
 
-#[derive(Debug, Default)]
+// 假设你已定义的NonceInfo结构体（存储每个账户的前后hash）
+#[derive(Debug, Clone, Default)]
 struct NonceInfo {
-    pub pre_hash: Hash,
-    pub cur_hash: Hash,
+    pre_hash: Hash,
+    cur_hash: Hash,
 }
 
-static NONCE_ACCOUNT_KEY: LazyLock<RwLock<Pubkey>> =
-    LazyLock::new(|| RwLock::new(Pubkey::default()));
+// 全局缓存：key=Nonce账户Pubkey，value=该账户的hash信息
+static NONCE_CACHE: LazyLock<RwLock<HashMap<Pubkey, NonceInfo>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
-async fn init_nonce_account_key(nonce_account: Pubkey) {
-    let mut key = NONCE_ACCOUNT_KEY.write().await;
-    if *key != Pubkey::default() {
-        return;
-    }
-    *key = nonce_account;
-}
-
-/// 缓存Nonce hash
-static NONCE_CACHE: LazyLock<RwLock<NonceInfo>> =
-    LazyLock::new(|| RwLock::new(NonceInfo::default()));
-
-async fn init_nonce_cache() {
+/// 初始化指定Nonce账户的hash缓存（不存在则创建，存在且未初始化则更新）
+async fn init_nonce(nonce_account: Pubkey) {
     let cache = &*NONCE_CACHE;
 
-    if {
-        let current = cache.read().await;
-        current.pre_hash == Hash::default() && current.cur_hash == Hash::default()
-    } {
+    // 检查是否需要初始化：1.缓存中无该账户 2.有账户但hash都是默认值
+    let need_init = {
+        let current_cache = cache.read().await;
+        match current_cache.get(&nonce_account) {
+            None => true,
+            Some(info) => info.pre_hash == Hash::default() && info.cur_hash == Hash::default(),
+        }
+    };
+
+    if need_init {
+        // 从链上获取Nonce账户数据（保持原解析逻辑：40-72字节是hash字段）
         let account = JSON_RPC_CLIENT
-            .get_account(&*NONCE_ACCOUNT_KEY.read().await)
+            .get_account(&nonce_account)
             .await
-            .expect("获取 nonce 账户失败");
-        let data = account.data;
-        let Ok(hash) = Hash::try_from_slice(&data[40..72]) else {
-            return;
+            .expect(&format!("获取Nonce账户[{}]失败", nonce_account));
+
+        let new_hash = match Hash::try_from_slice(&account.data[40..72]) {
+            Ok(hash) => hash,
+            Err(e) => {
+                eprintln!("解析Nonce账户[{}]hash失败: {}", nonce_account, e);
+                return;
+            }
         };
 
+        // 写入缓存：不存在则创建默认值，存在则更新
         let mut cache_mut = cache.write().await;
-        cache_mut.pre_hash = cache_mut.cur_hash;
-        cache_mut.cur_hash = hash;
+        let info = cache_mut.entry(nonce_account).or_default(); // 无则创建默认NonceInfo
+        info.pre_hash = info.cur_hash; // 旧当前hash变为前hash
+        info.cur_hash = new_hash; // 新hash作为当前hash
     }
 }
 
-pub async fn get_nonce_hash() -> Hash {
-    let _cache = init_nonce_cache().await; // 保证初始化一次
-    let read = NONCE_CACHE.read().await;
-    read.cur_hash
+/// 获取指定Nonce账户的当前hash（自动确保初始化）
+pub async fn get_nonce_hash(nonce_account: Pubkey) -> Hash {
+    // 确保该账户已初始化（首次调用会触发链上查询，后续直接读缓存）
+    init_nonce(nonce_account).await;
+
+    let cache = NONCE_CACHE.read().await;
+    // 因init_nonce已确保存在，unwrap安全（或用expect给出更友好错误）
+    cache
+        .get(&nonce_account)
+        .expect(&format!(
+            "Nonce账户[{}]未初始化，请检查链上账户是否存在",
+            nonce_account
+        ))
+        .cur_hash
 }
 
-pub async fn update_nonce_hash(hash: Hash) {
-    let mut write = NONCE_CACHE.write().await;
-    (write.pre_hash, write.cur_hash) = (write.cur_hash, hash);
+/// 更新指定Nonce账户的hash（前hash = 旧当前hash，当前hash = 新传入hash）
+pub async fn update_nonce_hash(nonce_account: Pubkey, new_hash: Hash) {
+    let mut cache = NONCE_CACHE.write().await;
+    // 不存在则创建默认值，避免更新时panic
+    let info = cache.entry(nonce_account).or_default();
+    (info.pre_hash, info.cur_hash) = (info.cur_hash, new_hash);
 }
 
 pub async fn subscribe_nonce_and_transaction(
-    nonce_account: Pubkey,
+    nonce_accounts: &[Pubkey],
     payer_pubkey: Pubkey,
 ) -> Result<(), anyhow::Error> {
-    init_nonce_account_key(nonce_account).await;
-    let _ = init_nonce_cache().await;
+    for nonce_account in nonce_accounts {
+        init_nonce(*nonce_account).await;
+        info!("Starting to monitor account: {}", nonce_account);
+    }
 
-    info!("Starting to monitor account: {}", nonce_account);
     info!("Starting to monitor payer: {}", payer_pubkey);
 
     let mut client = setup_client().await?;
     info!("Connected to gRPC endpoint");
+    let mut subscribe_accounts = vec![payer_pubkey.to_string()];
+    for nonce_account in nonce_accounts {
+        subscribe_accounts.push(nonce_account.to_string());
+    }
 
     let subscribe_request = SubscribeRequest {
         accounts: HashMap::from([(
             "subscribe nonce account".to_string(),
             SubscribeRequestFilterAccounts {
-                account: vec![
-                    // account.clone(),
-                    payer_pubkey.to_string(),
-                    nonce_account.to_string(),
-                ],
+                account: subscribe_accounts.clone(),
                 owner: vec![],
                 filters: vec![],
                 nonempty_txn_signature: None,
@@ -149,11 +167,7 @@ pub async fn subscribe_nonce_and_transaction(
         transactions: HashMap::from([(
             "transaction subscribe".to_string(),
             SubscribeRequestFilterTransactions {
-                account_include: vec![
-                    // account,
-                    payer_pubkey.to_string(),
-                    nonce_account.to_string(),
-                ],
+                account_include: subscribe_accounts,
                 ..Default::default()
             },
         )]),
@@ -175,8 +189,12 @@ pub async fn subscribe_nonce_and_transaction(
                 Some(UpdateOneof::Account(account)) => {
                     let data = account.account.clone().unwrap().data;
                     // 只处理nonce账户格式的数据，其他账户忽略
-                    if let Ok(hash) = Hash::try_from_slice(&data) {
-                        update_nonce_hash(hash).await;
+                    if let Ok(hash) = Hash::try_from_slice(&data)
+                        && let Some(account) = account.account.clone().map(|acc| {
+                            Pubkey::new_from_array(acc.pubkey[0..32].try_into().unwrap())
+                        })
+                    {
+                        update_nonce_hash(account.into(), hash).await;
                     } else {
                         // 非nonce格式的账户更新，忽略
                         let pubkey_bytes = &account.account.unwrap_or_default().pubkey;
