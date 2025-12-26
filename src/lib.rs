@@ -182,6 +182,8 @@ pub async fn subscribe_nonce_and_transaction(
         .subscribe_with_request(Some(subscribe_request))
         .await?;
 
+    info!("start to monitor self: {payer_pubkey} tx");
+
     while let Some(message) = stream.next().await {
         match message {
             Ok(msg) => match msg.update_oneof {
