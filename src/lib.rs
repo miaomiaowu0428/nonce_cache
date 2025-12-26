@@ -290,6 +290,7 @@ pub async fn confirm_tx(
     expected_signatures: HashSet<Signature>,
     timeout_secs: u64,
 ) -> Result<(Signature, TransactionFormat), Box<dyn std::error::Error + Sync + Send>> {
+    info!("confirming: {expected_signatures:#?}");
     let res = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         loop {
             if let Ok(TxResultEvent {
