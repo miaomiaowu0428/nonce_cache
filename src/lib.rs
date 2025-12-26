@@ -145,10 +145,7 @@ pub async fn subscribe_nonce_and_transaction(
         info!("Starting to monitor account: {}", nonce_account);
     }
 
-    info!("Starting to monitor payer: {}", payer_pubkey);
-
     let mut client = setup_client().await?;
-    info!("Connected to gRPC endpoint");
     let mut subscribe_accounts = vec![payer_pubkey.to_string()];
     for nonce_account in nonce_accounts {
         subscribe_accounts.push(nonce_account.to_string());
@@ -178,6 +175,7 @@ pub async fn subscribe_nonce_and_transaction(
         commitment: Some(CommitmentLevel::Processed.into()),
         ..Default::default()
     };
+    info!("building grpc stream to: {}", *ENDPOINT);
     let (mut _subscribe_tx, mut stream) = client
         .subscribe_with_request(Some(subscribe_request))
         .await?;
