@@ -211,7 +211,7 @@ pub async fn subscribe_nonce_and_transaction(
                 Some(UpdateOneof::Transaction(tnx)) => {
                     let tx: TransactionFormat = tnx.into();
                     let sig = tx.signature;
-                    info!("检测到交易: {:?}", sig); // 👈 显示所有检测到的交易
+                    info!("检测到交易: {}", sig); // 👈 显示所有检测到的交易
                     let Some(meta) = &tx.meta else {
                         let event = tx_result_channel::TxResultEvent {
                             signature: sig,
