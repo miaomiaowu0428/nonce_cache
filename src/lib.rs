@@ -27,6 +27,8 @@ use {
 };
 
 pub mod confirm;
+pub use confirm::confirm_first::confirm_tx;
+pub use confirm::confirm_success::confirm_success_tx;
 
 // 定义交易结果的全局广播 channel
 global_broadcast! {
