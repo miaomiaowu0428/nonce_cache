@@ -1,5 +1,4 @@
 use {
-    crate::tx_result_channel::TxResultEvent,
     anyhow,
     borsh::BorshDeserialize,
     futures::stream::StreamExt,
@@ -9,7 +8,7 @@ use {
     solana_commitment_config::CommitmentConfig,
     solana_sdk::{hash::Hash, pubkey::Pubkey, signature::Signature},
     std::{
-        collections::{HashMap, HashSet},
+        collections::HashMap,
         env,
         sync::{Arc, LazyLock},
     },
@@ -142,7 +141,7 @@ pub async fn update_nonce_hash(nonce_account: Pubkey, new_hash: Hash) {
 
 pub async fn subscribe_nonce_and_transaction(
     nonce_accounts: Vec<Pubkey>,
-    payer_pubkey: Pubkey,
+    payer_pubkeys: Vec<Pubkey>,
 ) -> Result<(), anyhow::Error> {
     for nonce_account in &nonce_accounts {
         init_nonce(*nonce_account).await;
@@ -150,7 +149,13 @@ pub async fn subscribe_nonce_and_transaction(
     }
 
     let mut client = setup_client().await?;
-    let mut subscribe_accounts = vec![payer_pubkey.to_string()];
+    let mut subscribe_accounts = payer_pubkeys
+        .iter()
+        .map(|p| {
+            info!("Starting to monitor account: {}", p);
+            p.to_string()
+        })
+        .collect::<Vec<String>>();
     for nonce_account in nonce_accounts {
         subscribe_accounts.push(nonce_account.to_string());
     }
@@ -183,8 +188,6 @@ pub async fn subscribe_nonce_and_transaction(
     let (mut _subscribe_tx, mut stream) = client
         .subscribe_with_request(Some(subscribe_request))
         .await?;
-
-    info!("start to monitor self: {payer_pubkey} tx");
 
     while let Some(message) = stream.next().await {
         match message {
