@@ -26,6 +26,8 @@ use {
     },
 };
 
+pub mod confirm;
+
 // 定义交易结果的全局广播 channel
 global_broadcast! {
     mod tx_result_channel {
@@ -273,95 +275,4 @@ async fn setup_client() -> Result<GeyserGrpcClient<impl Interceptor>, anyhow::Er
         .await?;
 
     Ok(client)
-}
-
-/// 监听交易结果的通用函数
-///
-/// # 参数
-/// - `tx_result_rx`: 已订阅的交易结果接收端
-/// - `expected_signatures`: 期望的交易签名集合
-/// - `timeout_secs`: 超时时间（秒）
-///
-/// # 返回
-/// - `Ok(Signature)`: 成功获取到交易签名
-/// - `Err(...)`: 超时或其他错误
-pub async fn confirm_tx(
-    mut tx_result_rx: tokio::sync::broadcast::Receiver<TxResultEvent>,
-    expected_signatures: HashSet<Signature>,
-    timeout_secs: u64,
-) -> Result<(Signature, TransactionFormat), Box<dyn std::error::Error + Sync + Send>> {
-    info!("confirming: {expected_signatures:#?}");
-    let res = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-        loop {
-            if let Ok(TxResultEvent {
-                signature,
-                tx,
-                status,
-            }) = tx_result_rx.recv().await
-            {
-                if expected_signatures.contains(&signature) {
-                    info!("交易确认: {:?} -> {:#?}", signature, status);
-                    match status {
-                        TradeStatus::Success(_) => return Ok((signature, tx)),
-                        TradeStatus::Failed(_, _) => {
-                            error!("交易失败: {:?}", signature);
-                            return Err("交易失败".into());
-                        }
-                    }
-                } else {
-                    // 广播模式下，直接忽略不属于我们的交易结果
-                    info!("非本组交易, 忽略: {:?}", signature);
-                }
-            }
-        }
-    })
-    .await;
-
-    match res {
-        Ok(Ok((sig, tx))) => Ok((sig, tx)),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(format!("交易监听超时").into()),
-    }
-}
-
-pub async fn confirm_success_tx(
-    mut tx_result_rx: tokio::sync::broadcast::Receiver<TxResultEvent>,
-    expected_signatures: HashSet<Signature>,
-    timeout_secs: u64,
-) -> Result<(Signature, TransactionFormat), Box<dyn std::error::Error + Sync + Send>> {
-    let res = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-        loop {
-            if let Ok(TxResultEvent {
-                signature: sig,
-                tx,
-                status,
-            }) = tx_result_rx.recv().await
-            {
-                if expected_signatures.contains(&sig) {
-                    info!("交易确认: {:?} -> {:#?}", sig, status);
-                    match status {
-                        TradeStatus::Success(_) => return Ok((sig, tx)),
-                        TradeStatus::Failed(_, _) => {
-                            // 只记录失败，但继续等待其他交易的成功
-                            error!("交易失败: {:?}，继续等待其他交易", sig);
-                            continue;
-                        }
-                    }
-                } else {
-                    // 广播模式下，直接忽略不属于我们的交易结果
-                    info!("非本组交易, 忽略: {:?}", sig);
-                }
-            }
-        }
-    })
-    .await;
-
-    match res {
-        Ok(Ok((sig, tx))) => Ok((sig, tx)),
-        Ok(Err(e)) => {
-            error!("this should not happen, a loop should not return Err");
-            Err(e)
-        }
-        Err(_) => Err(format!("所有交易都失败或超时").into()),
-    }
 }
