@@ -19,3 +19,4 @@ yellowstone-grpc-client = "10.2.0"
 yellowstone-grpc-proto = "10.1.1"
 tonic = "0.14.2"
 solana-commitment-config = "3.1.0"
+whirlwind = { git = "https://github.com/miaomiaowu0428/whirlwind.git" }
