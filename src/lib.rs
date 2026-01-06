@@ -1,5 +1,4 @@
 use crate::self_balance::{set_monitored_payers, update_balances_from_tx};
-use std::{collections::HashSet, str::FromStr};
 
 use {
     anyhow,
