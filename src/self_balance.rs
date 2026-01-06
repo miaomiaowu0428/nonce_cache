@@ -9,12 +9,11 @@ use tokio::sync::RwLock;
 pub static SELF_TOKEN_BALANCE: LazyLock<whirlwind::ShardMap<(Pubkey, Pubkey), u64>> =
     LazyLock::new(|| whirlwind::ShardMap::with_shards(16));
 
-pub async fn self_balance_of(owner: &Pubkey, mint: &Pubkey) -> u64 {
+pub async fn self_balance_of(owner: &Pubkey, mint: &Pubkey) -> Option<u64> {
     SELF_TOKEN_BALANCE
         .get(&(*owner, *mint))
         .await
         .map(|res| *res)
-        .unwrap_or(0)
 }
 
 pub static MONITORED_PAYERS: LazyLock<RwLock<HashSet<Pubkey>>> =
