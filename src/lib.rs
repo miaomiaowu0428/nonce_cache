@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::self_balance::{set_monitored_payers, update_balances_from_tx};
 
 use {
@@ -31,6 +33,7 @@ pub mod confirm;
 pub mod self_balance;
 pub use confirm::confirm_first::confirm_tx;
 pub use confirm::confirm_success::confirm_success_tx;
+use log::warn;
 
 // 定义交易结果的全局广播 channel
 global_broadcast! {
@@ -150,6 +153,10 @@ pub async fn subscribe_nonce_and_transaction(
         init_nonce(*nonce_account).await;
         info!("Starting to monitor account: {}", nonce_account);
     }
+    tokio::spawn(sync_nonce_for_every(
+        Duration::from_secs(30),
+        nonce_accounts.clone(),
+    ));
     set_monitored_payers(&payer_pubkeys[..]).await;
 
     let mut client = setup_client().await?;
@@ -205,7 +212,8 @@ pub async fn subscribe_nonce_and_transaction(
                             Pubkey::new_from_array(acc.pubkey[0..32].try_into().unwrap())
                         })
                     {
-                        update_nonce_hash(account.into(), hash).await;
+                        info!("检测到 Nonce 更新 | 账户: {} | 新 Hash: {}", account, hash);
+                        update_nonce_hash(account, hash).await;
                     } else {
                         // 非nonce格式的账户更新，忽略
                         let pubkey_bytes = &account.account.unwrap_or_default().pubkey;
@@ -285,4 +293,72 @@ async fn setup_client() -> Result<GeyserGrpcClient<impl Interceptor>, anyhow::Er
         .await?;
 
     Ok(client)
+}
+
+async fn sync_nonce_for_every(time: Duration, nonce_accounts: Vec<Pubkey>) {
+    loop {
+        for account in &nonce_accounts {
+            // 从链上获取Nonce账户数据（保持原解析逻辑：40-72字节是hash字段）
+            let Ok(account_info) = JSON_RPC_CLIENT.get_account(account).await else {
+                eprintln!("获取Nonce账户[{}]失败", account);
+                continue;
+            };
+
+            let new_hash = match Hash::try_from_slice(&account_info.data[40..72]) {
+                Ok(hash) => hash,
+                Err(e) => {
+                    eprintln!("解析Nonce账户[{}]hash失败: {}", account, e);
+                    continue;
+                }
+            };
+
+            let _ = flash_nonce(account, new_hash).await;
+        }
+
+        tokio::time::sleep(time).await;
+    }
+}
+
+async fn flash_nonce(account: &Pubkey, fetched_hash: Hash) {
+    // 1. 获取当前缓存中的值进行初步比对
+    let current_cached_hash = {
+        let cache = NONCE_CACHE.read().await;
+        cache
+            .get(account)
+            .map(|info| info.cur_hash)
+            .unwrap_or_default()
+    };
+
+    // 如果 fetch 到的值和缓存一致，直接跳过
+    if fetched_hash == current_cached_hash {
+        return;
+    }
+
+    // 2. 如果不匹配，触发“再次确认” (Second Fetch)
+    // 稍微延迟一小会儿，避开瞬间的网络抖动
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    match JSON_RPC_CLIENT.get_account(account).await {
+        Ok(confirm_account) => {
+            if let Ok(confirm_hash) = Hash::try_from_slice(&confirm_account.data[40..72]) {
+                // 3. 核心逻辑：两次 Fetch 的值必须相同，且依然与缓存不同
+                if confirm_hash == fetched_hash {
+                    warn!(
+                        "🚨 Nonce 不一致纠正 | 账户: {} | 缓存旧值: {} | 链上新值: {}",
+                        account, current_cached_hash, confirm_hash
+                    );
+
+                    // 执行更新逻辑
+                    update_nonce_hash(*account, confirm_hash).await;
+                } else {
+                    // 如果两次 fetch 都不一样，说明该账户非常活跃，或者 RPC 节点数据极度不稳定
+                    error!(
+                        "⚠️ Nonce 验证失败 (数据抖动) | 账户: {} | 第一次: {} | 第二次: {}",
+                        account, fetched_hash, confirm_hash
+                    );
+                }
+            }
+        }
+        Err(e) => error!("二次确认 Nonce 失败 [{}]: {}", account, e),
+    }
 }
