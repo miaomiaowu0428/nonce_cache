@@ -30,10 +30,16 @@ use {
 };
 
 pub mod confirm;
+pub mod pnl_tracker;
 pub mod self_balance;
 pub use confirm::confirm_first::confirm_tx;
 pub use confirm::confirm_success::confirm_success_tx;
 use log::warn;
+pub use pnl_tracker::{
+    PnLSummary, TokenPnL, clear_all_pnl, init_pnl_db, print_pnl_report, query_all_pnl,
+    query_pnl_summary, query_sorted_pnl, query_token_pnl, start_periodic_report, start_pnl_tracker,
+    to_ui_amount,
+};
 
 // 定义交易结果的全局广播 channel
 global_broadcast! {
@@ -158,6 +164,24 @@ pub async fn subscribe_nonce_and_transaction(
         nonce_accounts.clone(),
     ));
     set_monitored_payers(&payer_pubkeys[..]).await;
+
+    // 初始化盈亏跟踪数据库并启动跟踪器（静默失败，不影响主流程）
+    tokio::spawn({
+        let payer_pubkeys = payer_pubkeys.clone();
+        async move {
+            if pnl_tracker::init_pnl_db(None).await.is_ok() {
+                // 启动盈亏跟踪器，监控所有 payer
+                tokio::spawn(pnl_tracker::start_pnl_tracker(payer_pubkeys));
+
+                // 可选：启动定期盈亏报告（设置为 0 表示不启动）
+                if let Ok(interval) = env::var("PNL_REPORT_INTERVAL_SECS")
+                    && let Ok(secs) = interval.parse::<u64>()
+                {
+                    pnl_tracker::start_periodic_report(secs).await;
+                }
+            }
+        }
+    });
 
     let mut client = setup_client().await?;
     let mut subscribe_accounts = payer_pubkeys
