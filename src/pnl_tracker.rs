@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use log::info;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::RwLock;
@@ -348,6 +349,8 @@ async fn process_success_transaction(
     tx: &grpc_client::TransactionFormat,
     target: Pubkey,
 ) -> Result<(), anyhow::Error> {
+    use log::info;
+
     // 获取余额变化
     let balance_changes = extract_balance_changes(tx)?;
     let self_balance_changes: Vec<BalanceChange> = balance_changes
@@ -397,8 +400,16 @@ async fn process_success_transaction(
         }
     }) else {
         // 没有找到标的币，可能是纯转账或其他操作，跳过
+        info!("💰 [PnL] 跳过交易 {} (无标的币)", tx.signature);
         return Ok(());
     };
+
+    info!(
+        "💰 [PnL] 处理交易 {} | 标的: {} | 本位: {}",
+        tx.signature,
+        base_mint,
+        quote_name(&quote_mint)
+    );
 
     // 判断是否是 SOL/WSOL 本位
     let is_sol_based = quote_mint == Pubkey::default() || quote_mint == wsol_mint;
@@ -429,6 +440,16 @@ async fn process_success_transaction(
         });
 
         token_stat.add_success_trade(quote_change.change, sol_gas, quote_mint, target);
+
+        let quote_mint_pubkey = token_stat.get_quote_mint().unwrap_or_default();
+        info!(
+            "💰 [PnL] 更新统计 | Payer: {} | Token: {} | 本位盈亏: {:.4} {} | 成功交易数: {}",
+            target,
+            base_mint,
+            to_ui_amount(token_stat.quote_pnl, &quote_mint_pubkey),
+            quote_name(&quote_mint_pubkey),
+            token_stat.success_tx_count
+        );
     }
 
     // 异步保存到数据库
@@ -486,7 +507,9 @@ pub async fn start_pnl_tracker(targets: Vec<Pubkey>) {
                         monitored.iter().find(|&&addr| tx_accounts.contains(&addr))
                     {
                         // 静默处理错误，不影响后续交易
-                        let _ = process_success_transaction(&event.tx, *target).await;
+                        if let Err(e) = process_success_transaction(&event.tx, *target).await {
+                            log::warn!("💰 [PnL] 处理交易失败 {}: {:?}", event.tx.signature, e);
+                        }
                     }
                 }
             }
@@ -664,7 +687,6 @@ pub async fn print_pnl_report() {
         }
     }
 
-    info!();
     info!(
         "📈 盈利币种: {} | 📉 亏损币种: {} | 胜率: {:.1}%",
         summary.win_count,
