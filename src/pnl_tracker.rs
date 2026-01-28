@@ -153,25 +153,27 @@ pub async fn load_token_pnl(mint: &Pubkey) -> Option<TokenPnL> {
 
 /// 加载所有代币的盈亏数据
 pub async fn load_all_pnl() -> HashMap<Pubkey, TokenPnL> {
-    let Some(db) = get_db().await else {
-        return HashMap::new();
-    };
+    // 先尝试从全局 DB 读取
+    if let Some(db) = get_db().await {
+        let mut result = HashMap::new();
 
-    let mut result = HashMap::new();
-
-    for item in db.iter() {
-        if let Ok((key, value)) = item {
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Ok(mint) = key_str.parse::<Pubkey>() {
-                    if let Ok(pnl) = bincode::deserialize::<TokenPnL>(&value) {
-                        result.insert(mint, pnl);
+        for item in db.iter() {
+            if let Ok((key, value)) = item {
+                if let Ok(key_str) = std::str::from_utf8(&key) {
+                    if let Ok(mint) = key_str.parse::<Pubkey>() {
+                        if let Ok(pnl) = bincode::deserialize::<TokenPnL>(&value) {
+                            result.insert(mint, pnl);
+                        }
                     }
                 }
             }
         }
+
+        return result;
     }
 
-    result
+    // 如果全局 DB 未初始化，返回空（这在 analyze 工具中会发生，因为它会先调用 init_pnl_db）
+    HashMap::new()
 }
 
 /// 清空所有盈亏数据（慎用）
