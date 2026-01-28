@@ -132,7 +132,11 @@ pub async fn init_pnl_db(db_path: Option<PathBuf>) -> Result<(), anyhow::Error> 
 }
 
 /// 获取数据库实例
-async fn get_db() -> Option<sled::Db> {
+/// 获取共享的 sled DB 实例
+///
+/// 返回已初始化的数据库连接，如果未初始化则返回 None。
+/// 此函数可被外部模块调用以确保使用同一个 DB 实例，避免缓存不一致。
+pub async fn get_db() -> Option<sled::Db> {
     DB.read().await.clone()
 }
 
