@@ -12,8 +12,7 @@ pub static SELF_TOKEN_BALANCE: LazyLock<whirlwind::ShardMap<(Pubkey, Pubkey), u6
 pub async fn self_balance_of(owner: &Pubkey, mint: &Pubkey) -> Option<u64> {
     SELF_TOKEN_BALANCE
         .get(&(*owner, *mint))
-        .await
-        .map(|res| *res)
+        .await.as_deref().copied()
 }
 
 pub static MONITORED_PAYERS: LazyLock<RwLock<HashSet<Pubkey>>> =

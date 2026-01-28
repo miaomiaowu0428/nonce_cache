@@ -177,24 +177,105 @@ pub async fn load_all_pnl() -> HashMap<(Pubkey, Pubkey), TokenPnL> {
         return result;
     };
 
+    let mut corrupted_count = 0;
     for item in db.iter() {
-        if let Ok((key, value)) = item {
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                // 解析 "payer:mint" 格式
-                if let Some((payer_str, mint_str)) = key_str.split_once(':') {
-                    if let (Ok(payer), Ok(mint)) =
-                        (payer_str.parse::<Pubkey>(), mint_str.parse::<Pubkey>())
-                    {
-                        if let Ok(pnl) = bincode::deserialize::<TokenPnL>(&value) {
-                            result.insert((payer, mint), pnl);
+        match item {
+            Ok((key, value)) => {
+                if let Ok(key_str) = std::str::from_utf8(&key) {
+                    // 解析 "payer:mint" 格式
+                    if let Some((payer_str, mint_str)) = key_str.split_once(':') {
+                        if let (Ok(payer), Ok(mint)) =
+                            (payer_str.parse::<Pubkey>(), mint_str.parse::<Pubkey>())
+                        {
+                            match bincode::deserialize::<TokenPnL>(&value) {
+                                Ok(pnl) => {
+                                    result.insert((payer, mint), pnl);
+                                }
+                                Err(e) => {
+                                    corrupted_count += 1;
+                                    eprintln!(
+                                        "⚠️ 跳过损坏的 PnL 数据: payer={}, mint={}, error={}",
+                                        payer, mint, e
+                                    );
+                                }
+                            }
                         }
                     }
                 }
             }
+            Err(e) => {
+                corrupted_count += 1;
+                eprintln!("⚠️ 跳过损坏的数据库条目: {}", e);
+            }
         }
     }
 
+    if corrupted_count > 0 {
+        eprintln!("⚠️ 总共跳过了 {} 个损坏的条目", corrupted_count);
+    }
+
     result
+}
+
+/// 修复数据库：删除所有损坏的条目
+pub async fn repair_pnl_db() -> Result<usize, String> {
+    let Some(db) = get_db().await else {
+        return Err("数据库未初始化".to_string());
+    };
+
+    let mut removed_count = 0;
+    let mut keys_to_remove = Vec::new();
+
+    // 第一遍：找出所有损坏的键
+    for item in db.iter() {
+        match item {
+            Ok((key, value)) => {
+                // 尝试解析键
+                if let Ok(key_str) = std::str::from_utf8(&key) {
+                    if let Some((payer_str, mint_str)) = key_str.split_once(':') {
+                        if let (Ok(payer), Ok(mint)) =
+                            (payer_str.parse::<Pubkey>(), mint_str.parse::<Pubkey>())
+                        {
+                            // 尝试反序列化值
+                            if bincode::deserialize::<TokenPnL>(&value).is_err() {
+                                eprintln!("🗑️ 发现损坏的数据: payer={}, mint={}", payer, mint);
+                                keys_to_remove.push(key.to_vec());
+                            }
+                        } else {
+                            eprintln!("🗑️ 发现无效的键格式: {}", key_str);
+                            keys_to_remove.push(key.to_vec());
+                        }
+                    } else {
+                        eprintln!("🗑️ 发现格式错误的键: {}", key_str);
+                        keys_to_remove.push(key.to_vec());
+                    }
+                } else {
+                    eprintln!("🗑️ 发现无法解析的键");
+                    keys_to_remove.push(key.to_vec());
+                }
+            }
+            Err(e) => {
+                eprintln!("🗑️ 发现无法读取的条目: {}", e);
+                // 对于完全损坏的条目，我们无法获取键，只能跳过
+            }
+        }
+    }
+
+    // 第二遍：删除所有标记的键
+    for key in keys_to_remove.iter() {
+        if let Err(e) = db.remove(key) {
+            eprintln!("❌ 删除键失败: {}", e);
+        } else {
+            removed_count += 1;
+        }
+    }
+
+    // 刷新到磁盘
+    if let Err(e) = db.flush() {
+        return Err(format!("刷新数据库失败: {}", e));
+    }
+
+    Ok(removed_count)
 }
 
 /// 清空所有盈亏数据（慎用）

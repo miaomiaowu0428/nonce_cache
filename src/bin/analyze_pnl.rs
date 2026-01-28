@@ -1,6 +1,6 @@
 use nonce_cache::{
-    TokenPnL, init_pnl_db, print_pnl_report, query_all_pnl, query_pnl_summary, query_sorted_pnl,
-    to_ui_amount,
+    TokenPnL, init_pnl_db, pnl_tracker::repair_pnl_db, print_pnl_report, query_all_pnl,
+    query_pnl_summary, query_sorted_pnl, to_ui_amount,
 };
 use solana_sdk::pubkey::Pubkey;
 use std::env;
@@ -8,9 +8,59 @@ use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = env::args().collect();
+
+    // 解析最小交易数参数
+    let mut min_tx_count = 2; // 默认过滤掉只有1笔交易的
+    let mut db_path_arg_index = 1;
+
+    // 检查 --min-tx 参数
+    if args.len() > 2 && args[1] == "--min-tx" {
+        if let Ok(count) = args[2].parse::<usize>() {
+            min_tx_count = count;
+            db_path_arg_index = 3;
+            println!("📊 设置最小交易数过滤器: {} 笔", min_tx_count);
+        } else {
+            eprintln!("❌ --min-tx 参数必须是数字");
+            print_usage();
+            return Ok(());
+        }
+    }
+
+    // 检查是否是修复模式
+    if args.len() > 1 && args[1] == "--repair" {
+        let db_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("./data/pnl_tracker"));
+
+        println!("🔧 修复模式：正在检查数据库: {}", db_path.display());
+
+        if let Err(e) = init_pnl_db(Some(db_path.clone())).await {
+            eprintln!("❌ 无法打开数据库: {}", e);
+            return Err(e.into());
+        }
+
+        match repair_pnl_db().await {
+            Ok(count) => {
+                if count > 0 {
+                    println!("✅ 成功删除 {} 个损坏的条目", count);
+                } else {
+                    println!("✅ 数据库完好，没有发现损坏的条目");
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ 修复失败: {}", e);
+                return Err(e.into());
+            }
+        }
+
+        return Ok(());
+    }
+
     // 从命令行参数获取数据库路径，默认为 ./data/pnl_tracker
-    let db_path = env::args()
-        .nth(1)
+    let db_path = args
+        .get(db_path_arg_index)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("./data/pnl_tracker"));
 
@@ -21,19 +71,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = init_pnl_db(Some(db_path.clone())).await {
         eprintln!("❌ 无法打开数据库: {}", e);
         eprintln!("请确保路径正确: {}", db_path.display());
+        eprintln!(
+            "💡 提示：如果数据库损坏，可以尝试运行: cargo run --bin analyze_pnl -- --repair [路径]"
+        );
         return Err(e.into());
     }
 
     // 直接从数据库加载所有数据（不依赖内存缓存）
     use nonce_cache::load_all_pnl;
-    let all_pnl = load_all_pnl().await;
+    let all_pnl_raw = load_all_pnl().await;
 
-    if all_pnl.is_empty() {
+    if all_pnl_raw.is_empty() {
         println!("⚠️  数据库为空，没有找到任何盈亏记录");
         return Ok(());
     }
 
-    println!("✅ 成功加载 {} 个代币的盈亏数据", all_pnl.len());
+    println!("✅ 原始数据: {} 个代币", all_pnl_raw.len());
+
+    // 过滤掉交易数不足的代币
+    let all_pnl: std::collections::HashMap<_, _> = all_pnl_raw
+        .into_iter()
+        .filter(|(_, pnl)| pnl.success_tx_count >= min_tx_count)
+        .collect();
+
+    let filtered_count = all_pnl.len();
+    println!(
+        "✅ 过滤后数据: {} 个代币（最小交易数: {}）",
+        filtered_count, min_tx_count
+    );
+
+    if all_pnl.is_empty() {
+        println!("⚠️  过滤后没有符合条件的代币");
+        return Ok(());
+    }
     println!();
 
     // 1. 打印完整报告（手动生成，不用内存缓存）
@@ -322,6 +392,21 @@ fn print_token_detail(rank: usize, payer: &Pubkey, mint: &Pubkey, pnl: &TokenPnL
             gas_ui
         );
     }
+}
+
+fn print_usage() {
+    println!("用法:");
+    println!("  cargo run --bin analyze_pnl [选项] [数据库路径]");
+    println!();
+    println!("选项:");
+    println!("  --repair              修复损坏的数据库");
+    println!("  --min-tx <数量>       过滤掉交易数少于指定数量的代币（默认: 2）");
+    println!();
+    println!("示例:");
+    println!("  cargo run --bin analyze_pnl");
+    println!("  cargo run --bin analyze_pnl --min-tx 3");
+    println!("  cargo run --bin analyze_pnl --min-tx 5 ./data/pnl_tracker");
+    println!("  cargo run --bin analyze_pnl --repair ./data/pnl_tracker");
 }
 
 fn get_quote_name(mint: &Pubkey) -> &'static str {
