@@ -17,11 +17,11 @@ const USDT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 
 static QUOTE_CURRENCIES: LazyLock<Vec<Pubkey>> = LazyLock::new(|| {
     vec![
-        USD1.parse().unwrap(), // 优先级 1: USD1
-        USDC.parse().unwrap(), // 优先级 2: USDC
-        USDT.parse().unwrap(), // 优先级 3: USDT
-        WSOL.parse().unwrap(), // 优先级 4: WSOL
-        Pubkey::default(),     // 优先级 5: SOL (native)
+        USD1.parse().expect("USD1 address invalid"), // 优先级 1: USD1
+        USDC.parse().expect("USDC address invalid"), // 优先级 2: USDC
+        USDT.parse().expect("USDT address invalid"), // 优先级 3: USDT
+        WSOL.parse().expect("WSOL address invalid"), // 优先级 4: WSOL
+        Pubkey::default(),                           // 优先级 5: SOL (native)
     ]
 });
 
@@ -298,17 +298,19 @@ pub struct BalanceChange {
 }
 
 impl BalanceChange {
-    pub fn combine(&self, other: &BalanceChange) -> BalanceChange {
-        assert_eq!(self.owner, other.owner);
-        assert_eq!(self.decimal, other.decimal);
-        BalanceChange {
+    pub fn combine(&self, other: &BalanceChange) -> Option<BalanceChange> {
+        // 安全检查：确保是同一个 owner 和相同的 decimal
+        if self.owner != other.owner || self.decimal != other.decimal {
+            return None;
+        }
+        Some(BalanceChange {
             owner: self.owner,
             mint: self.mint,
             pre_balance: self.pre_balance + other.pre_balance,
             after_balance: self.after_balance + other.after_balance,
             change: self.change + other.change,
             decimal: self.decimal,
-        }
+        })
     }
 }
 
@@ -336,7 +338,10 @@ async fn process_success_transaction(
         .collect();
 
     // 按优先级确定本位币（quote）
-    let wsol_mint: Pubkey = WSOL.parse().unwrap();
+    let wsol_mint: Pubkey = match WSOL.parse() {
+        Ok(addr) => addr,
+        Err(_) => return Ok(()), // WSOL 地址解析失败，跳过此交易
+    };
     let (quote_mint, quote_change) = QUOTE_CURRENCIES
         .iter()
         .find_map(|&currency| {
@@ -348,7 +353,9 @@ async fn process_success_transaction(
                 let wsol_change = self_balance_changes.iter().find(|c| c.mint == wsol_mint);
 
                 match (sol_change, wsol_change) {
-                    (Some(sol), Some(wsol)) => Some((Pubkey::default(), sol.combine(wsol))),
+                    (Some(sol), Some(wsol)) => sol
+                        .combine(wsol)
+                        .map(|combined| (Pubkey::default(), combined)),
                     (Some(sol), None) => Some((Pubkey::default(), sol.clone())),
                     (None, Some(wsol)) => Some((Pubkey::default(), wsol.clone())),
                     (None, None) => None,
