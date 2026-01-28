@@ -598,7 +598,7 @@ pub async fn print_pnl_report() {
     let sorted_pnl = query_sorted_pnl(false).await; // 从高到低
     let summary = query_pnl_summary().await;
 
-    println!("\n========== 📊 实时盈亏报告 ==========\n");
+    info!!("\n========== 📊 实时盈亏报告 ==========\n");
 
     for ((payer, mint), stat) in sorted_pnl.iter() {
         let Some(quote_mint) = stat.get_quote_mint() else {
@@ -619,7 +619,7 @@ pub async fn print_pnl_report() {
         // 根据本位币类型显示不同格式
         if stat.is_sol_based() {
             // SOL 本位：gas 已包含在 quote_pnl 中
-            println!(
+            info!!(
                 "{:<4} | Payer: {:<8} | Token: {:<45} | {:>+10.4} {:>4} | 交易数: {:>3}",
                 status,
                 &payer.to_string()[..8],
@@ -631,7 +631,7 @@ pub async fn print_pnl_report() {
         } else {
             // 稳定币本位：单独显示 gas 成本
             let gas_ui = to_ui_amount(stat.sol_gas_cost, &Pubkey::default());
-            println!(
+            info!!(
                 "{:<4} | Payer: {:<8} | Token: {:<45} | {:>+10.4} {:>4} | 交易数: {:>3} | gas:{:>+7.4} SOL",
                 status,
                 &payer.to_string()[..8],
@@ -644,8 +644,8 @@ pub async fn print_pnl_report() {
         }
     }
 
-    println!("\n================================================");
-    println!("💰 各本位币盈亏汇总：");
+    info!!("\n================================================");
+    info!!("💰 各本位币盈亏汇总：");
 
     for (quote_str, total_pnl) in summary.total_by_quote.iter() {
         if let Ok(quote_mint) = quote_str.parse::<Pubkey>() {
@@ -660,12 +660,12 @@ pub async fn print_pnl_report() {
                 "➖"
             };
 
-            println!("  {} {}: {:>+12.4}", emoji, quote_symbol, quote_ui);
+            info!!("  {} {}: {:>+12.4}", emoji, quote_symbol, quote_ui);
         }
     }
 
-    println!();
-    println!(
+    info!!();
+    info!!(
         "📈 盈利币种: {} | 📉 亏损币种: {} | 胜率: {:.1}%",
         summary.win_count,
         summary.loss_count,
@@ -675,5 +675,5 @@ pub async fn print_pnl_report() {
             0.0
         }
     );
-    println!("================================================\n");
+    info!!("================================================\n");
 }
