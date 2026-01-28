@@ -65,6 +65,7 @@ pub fn to_ui_amount(amount: i128, mint: &Pubkey) -> f64 {
 /// 代币盈亏统计
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenPnL {
+    pub payer: String,           // 交易账户地址
     pub quote_pnl: i128,         // 本位币盈亏
     pub sol_gas_cost: i128,      // SOL gas 总成本（稳定币本位时单独统计）
     pub quote_mint: String,      // 使用的本位币类型（存储为字符串方便序列化）
@@ -73,14 +74,23 @@ pub struct TokenPnL {
 
 impl TokenPnL {
     /// 添加一笔成功交易的盈亏
-    pub fn add_success_trade(&mut self, quote_change: i128, sol_gas: i128, quote_mint: Pubkey) {
+    pub fn add_success_trade(
+        &mut self,
+        quote_change: i128,
+        sol_gas: i128,
+        quote_mint: Pubkey,
+        payer: Pubkey,
+    ) {
         self.quote_pnl += quote_change;
         self.sol_gas_cost += sol_gas;
         self.success_tx_count += 1;
 
-        // 首次记录时设置 quote_mint
+        // 首次记录时设置 quote_mint 和 payer
         if self.quote_mint.is_empty() {
             self.quote_mint = quote_mint.to_string();
+        }
+        if self.payer.is_empty() {
+            self.payer = payer.to_string();
         }
     }
 
@@ -126,12 +136,16 @@ async fn get_db() -> Option<sled::Db> {
 }
 
 /// 保存单个代币的盈亏数据
-async fn save_token_pnl(mint: &Pubkey, pnl: &TokenPnL) -> Result<(), anyhow::Error> {
+async fn save_token_pnl(
+    payer: &Pubkey,
+    mint: &Pubkey,
+    pnl: &TokenPnL,
+) -> Result<(), anyhow::Error> {
     let Some(db) = get_db().await else {
         return Err(anyhow::anyhow!("数据库未初始化"));
     };
 
-    let key = mint.to_string();
+    let key = format!("{}:{}", payer, mint);
     let value = bincode::serialize(pnl)?;
     db.insert(key.as_bytes(), value)?;
     // 使用 flush 而非 flush_async 避免潜在的阻塞问题
@@ -140,10 +154,10 @@ async fn save_token_pnl(mint: &Pubkey, pnl: &TokenPnL) -> Result<(), anyhow::Err
     Ok(())
 }
 
-/// 加载单个代币的盈亏数据
-pub async fn load_token_pnl(mint: &Pubkey) -> Option<TokenPnL> {
+/// 加载单个代币的盈亏数据（按账户）
+pub async fn load_token_pnl(payer: &Pubkey, mint: &Pubkey) -> Option<TokenPnL> {
     let db = get_db().await?;
-    let key = mint.to_string();
+    let key = format!("{}:{}", payer, mint);
 
     match db.get(key.as_bytes()) {
         Ok(Some(data)) => bincode::deserialize(&data).ok(),
@@ -152,28 +166,30 @@ pub async fn load_token_pnl(mint: &Pubkey) -> Option<TokenPnL> {
 }
 
 /// 加载所有代币的盈亏数据
-pub async fn load_all_pnl() -> HashMap<Pubkey, TokenPnL> {
-    // 先尝试从全局 DB 读取
-    if let Some(db) = get_db().await {
-        let mut result = HashMap::new();
+pub async fn load_all_pnl() -> HashMap<(Pubkey, Pubkey), TokenPnL> {
+    let mut result = HashMap::new();
+    let Some(db) = get_db().await else {
+        return result;
+    };
 
-        for item in db.iter() {
-            if let Ok((key, value)) = item {
-                if let Ok(key_str) = std::str::from_utf8(&key) {
-                    if let Ok(mint) = key_str.parse::<Pubkey>() {
+    for item in db.iter() {
+        if let Ok((key, value)) = item {
+            if let Ok(key_str) = std::str::from_utf8(&key) {
+                // 解析 "payer:mint" 格式
+                if let Some((payer_str, mint_str)) = key_str.split_once(':') {
+                    if let (Ok(payer), Ok(mint)) =
+                        (payer_str.parse::<Pubkey>(), mint_str.parse::<Pubkey>())
+                    {
                         if let Ok(pnl) = bincode::deserialize::<TokenPnL>(&value) {
-                            result.insert(mint, pnl);
+                            result.insert((payer, mint), pnl);
                         }
                     }
                 }
             }
         }
-
-        return result;
     }
 
-    // 如果全局 DB 未初始化，返回空（这在 analyze 工具中会发生，因为它会先调用 init_pnl_db）
-    HashMap::new()
+    result
 }
 
 /// 清空所有盈亏数据（慎用）
@@ -192,7 +208,7 @@ pub async fn clear_all_pnl() -> Result<(), anyhow::Error> {
 // ============ 实时统计 ============
 
 /// 内存缓存，用于快速访问（避免频繁读写 sled）
-static MEMORY_CACHE: LazyLock<RwLock<HashMap<Pubkey, TokenPnL>>> =
+static MEMORY_CACHE: LazyLock<RwLock<HashMap<(Pubkey, Pubkey), TokenPnL>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// 监控的地址列表
@@ -401,22 +417,25 @@ async fn process_success_transaction(
     // 更新内存缓存
     {
         let mut cache = MEMORY_CACHE.write().await;
-        let token_stat = cache.entry(base_mint).or_insert_with(|| {
+        let token_stat = cache.entry((target, base_mint)).or_insert_with(|| {
             // 尝试从数据库加载
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(async { load_token_pnl(&base_mint).await.unwrap_or_default() })
+                tokio::runtime::Handle::current().block_on(async {
+                    load_token_pnl(&target, &base_mint)
+                        .await
+                        .unwrap_or_default()
+                })
             })
         });
 
-        token_stat.add_success_trade(quote_change.change, sol_gas, quote_mint);
+        token_stat.add_success_trade(quote_change.change, sol_gas, quote_mint, target);
     }
 
     // 异步保存到数据库
     let cache = MEMORY_CACHE.read().await;
-    if let Some(pnl) = cache.get(&base_mint) {
+    if let Some(pnl) = cache.get(&(target, base_mint)) {
         // 静默保存，错误不影响后续处理
-        let _ = save_token_pnl(&base_mint, pnl).await;
+        let _ = save_token_pnl(&target, &base_mint, pnl).await;
     }
 
     Ok(())
@@ -501,20 +520,35 @@ pub async fn start_periodic_report(interval_secs: u64) {
 
 // ============ 查询接口 ============
 
-/// 查询单个代币的盈亏
-pub async fn query_token_pnl(mint: &Pubkey) -> Option<TokenPnL> {
+/// 查询单个代币的盈亏（按账户）
+pub async fn query_token_pnl(payer: &Pubkey, mint: &Pubkey) -> Option<TokenPnL> {
     // 优先从内存缓存读取
     let cache = MEMORY_CACHE.read().await;
-    if let Some(pnl) = cache.get(mint) {
+    if let Some(pnl) = cache.get(&(*payer, *mint)) {
         return Some(pnl.clone());
     }
 
     // 缓存没有，从数据库加载
-    load_token_pnl(mint).await
+    load_token_pnl(payer, mint).await
 }
 
-/// 查询所有代币的盈亏
-pub async fn query_all_pnl() -> HashMap<Pubkey, TokenPnL> {
+/// 查询某个账户的所有代币盈亏
+pub async fn query_payer_pnl(payer: &Pubkey) -> HashMap<Pubkey, TokenPnL> {
+    let cache = MEMORY_CACHE.read().await;
+    cache
+        .iter()
+        .filter_map(|((p, mint), pnl)| {
+            if p == payer {
+                Some((*mint, pnl.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 查询所有代币的盈亏（所有账户）
+pub async fn query_all_pnl() -> HashMap<(Pubkey, Pubkey), TokenPnL> {
     MEMORY_CACHE.read().await.clone()
 }
 
@@ -546,7 +580,7 @@ pub async fn query_pnl_summary() -> PnLSummary {
 }
 
 /// 查询按盈亏排序的代币列表
-pub async fn query_sorted_pnl(ascending: bool) -> Vec<(Pubkey, TokenPnL)> {
+pub async fn query_sorted_pnl(ascending: bool) -> Vec<((Pubkey, Pubkey), TokenPnL)> {
     let cache = MEMORY_CACHE.read().await;
     let mut sorted: Vec<_> = cache.iter().map(|(k, v)| (*k, v.clone())).collect();
 
@@ -566,7 +600,7 @@ pub async fn print_pnl_report() {
 
     println!("\n========== 📊 实时盈亏报告 ==========\n");
 
-    for (mint, stat) in sorted_pnl.iter() {
+    for ((payer, mint), stat) in sorted_pnl.iter() {
         let Some(quote_mint) = stat.get_quote_mint() else {
             continue;
         };
@@ -586,8 +620,9 @@ pub async fn print_pnl_report() {
         if stat.is_sol_based() {
             // SOL 本位：gas 已包含在 quote_pnl 中
             println!(
-                "{:<4} | {:<45} | {:>+10.4} {:>4} | 交易数: {:>3}",
+                "{:<4} | Payer: {:<8} | Token: {:<45} | {:>+10.4} {:>4} | 交易数: {:>3}",
                 status,
+                &payer.to_string()[..8],
                 mint.to_string(),
                 quote_ui,
                 quote_symbol,
@@ -597,8 +632,9 @@ pub async fn print_pnl_report() {
             // 稳定币本位：单独显示 gas 成本
             let gas_ui = to_ui_amount(stat.sol_gas_cost, &Pubkey::default());
             println!(
-                "{:<4} | {:<45} | {:>+10.4} {:>4} | 交易数: {:>3} | gas:{:>+7.4} SOL",
+                "{:<4} | Payer: {:<8} | Token: {:<45} | {:>+10.4} {:>4} | 交易数: {:>3} | gas:{:>+7.4} SOL",
                 status,
+                &payer.to_string()[..8],
                 mint.to_string(),
                 quote_ui,
                 quote_symbol,
