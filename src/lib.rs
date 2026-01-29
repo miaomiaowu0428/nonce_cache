@@ -7,16 +7,19 @@ use {
     borsh::BorshDeserialize,
     futures::stream::StreamExt,
     grpc_client::TransactionFormat,
-    log::{error, info},
+    log::{error, info, warn},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_commitment_config::CommitmentConfig,
     solana_sdk::{hash::Hash, pubkey::Pubkey, signature::Signature},
     std::{
         collections::HashMap,
         env,
-        sync::{Arc, LazyLock},
+        sync::{
+            Arc, LazyLock,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+        },
     },
-    tokio::{self, sync::RwLock},
+    tokio::{self, sync::RwLock, time::Instant},
     tonic::{service::Interceptor, transport::ClientTlsConfig},
     utils::global_broadcast,
     yellowstone_grpc_client::GeyserGrpcClient,
@@ -34,12 +37,17 @@ pub mod pnl_tracker;
 pub mod self_balance;
 pub use confirm::confirm_first::confirm_tx;
 pub use confirm::confirm_success::confirm_success_tx;
-use log::warn;
 pub use pnl_tracker::{
     PnLSummary, TokenPnL, clear_all_pnl, get_db, init_pnl_db, load_all_pnl, print_pnl_report,
     query_all_pnl, query_payer_pnl, query_pnl_summary, query_sorted_pnl, query_token_pnl,
     start_periodic_report, start_pnl_tracker, to_ui_amount,
 };
+
+// 全局连接健康状态
+static CONNECTION_HEALTHY: AtomicBool = AtomicBool::new(false);
+static LAST_MESSAGE_TIME: AtomicU64 = AtomicU64::new(0);
+static TOTAL_RECONNECTS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_MESSAGES: AtomicU64 = AtomicU64::new(0);
 
 // 定义交易结果的全局广播 channel
 global_broadcast! {
@@ -155,10 +163,193 @@ pub async fn subscribe_nonce_and_transaction(
     nonce_accounts: Vec<Pubkey>,
     payer_pubkeys: Vec<Pubkey>,
 ) -> Result<(), anyhow::Error> {
+    let auto_reconnect = env::var("GRPC_AUTO_RECONNECT")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+
+    let max_retries = env::var("GRPC_MAX_RETRIES")
+        .unwrap_or_else(|_| "999999".to_string())
+        .parse::<usize>()
+        .unwrap_or(999999);
+
+    let health_check_interval = env::var("GRPC_HEALTH_CHECK_INTERVAL_SECS")
+        .unwrap_or_else(|_| "60".to_string())
+        .parse::<u64>()
+        .unwrap_or(60);
+
+    // 启动健康检查任务
+    if health_check_interval > 0 {
+        tokio::spawn(health_check_task(Duration::from_secs(
+            health_check_interval,
+        )));
+    }
+
+    let mut retry_count = 0;
+    let mut last_error_type = String::new();
+    let mut consecutive_same_errors = 0;
+
+    loop {
+        // 记录连接尝试时间
+        let connect_start = Instant::now();
+
+        match subscribe_nonce_and_transaction_inner(nonce_accounts.clone(), payer_pubkeys.clone())
+            .await
+        {
+            Ok(_) => {
+                warn!("⚠️  gRPC 订阅正常退出（这不应该发生，可能是流自然结束）");
+                CONNECTION_HEALTHY.store(false, Ordering::Relaxed);
+                break;
+            }
+            Err(e) => {
+                CONNECTION_HEALTHY.store(false, Ordering::Relaxed);
+                let connection_duration = connect_start.elapsed();
+
+                // 分析错误类型
+                let error_str = format!("{:?}", e);
+                let error_type =
+                    if error_str.contains("broken pipe") || error_str.contains("BrokenPipe") {
+                        "BROKEN_PIPE"
+                    } else if error_str.contains("connection refused")
+                        || error_str.contains("ConnectionRefused")
+                    {
+                        "CONNECTION_REFUSED"
+                    } else if error_str.contains("timeout") || error_str.contains("Timeout") {
+                        "TIMEOUT"
+                    } else if error_str.contains("dns") || error_str.contains("DNS") {
+                        "DNS_ERROR"
+                    } else if error_str.contains("tls") || error_str.contains("TLS") {
+                        "TLS_ERROR"
+                    } else {
+                        "UNKNOWN"
+                    };
+
+                // 检测是否是相同类型的重复错误
+                if error_type == last_error_type {
+                    consecutive_same_errors += 1;
+                } else {
+                    consecutive_same_errors = 1;
+                    last_error_type = error_type.to_string();
+                }
+
+                error!("🔴 gRPC 订阅异常退出");
+                error!("   错误类型: {}", error_type);
+                error!(
+                    "   连接持续时长: {:.2}秒",
+                    connection_duration.as_secs_f64()
+                );
+                error!("   连续相同错误次数: {}", consecutive_same_errors);
+                error!("   详细错误: {:?}", e);
+                error!(
+                    "   统计: 总重连次数={}, 总接收消息={}",
+                    TOTAL_RECONNECTS.load(Ordering::Relaxed),
+                    TOTAL_MESSAGES.load(Ordering::Relaxed)
+                );
+
+                if !auto_reconnect {
+                    error!("❌ 自动重连已禁用 (GRPC_AUTO_RECONNECT=false)，程序终止");
+                    return Err(e);
+                }
+
+                retry_count += 1;
+                TOTAL_RECONNECTS.fetch_add(1, Ordering::Relaxed);
+
+                if retry_count > max_retries {
+                    error!("❌ 达到最大重试次数 ({}), 程序终止", max_retries);
+                    return Err(e);
+                }
+
+                // 如果连续相同错误超过5次，使用更长的退避时间
+                let base_backoff = std::cmp::min(retry_count * 2, 30);
+                let backoff_secs = if consecutive_same_errors > 5 {
+                    warn!(
+                        "⚠️  检测到连续 {} 次相同错误 [{}]，延长退避时间",
+                        consecutive_same_errors, error_type
+                    );
+                    std::cmp::min(base_backoff * 2, 60)
+                } else {
+                    base_backoff
+                };
+
+                warn!(
+                    "⏳ 第 {} 次重连尝试，等待 {} 秒后重新连接... (错误类型: {})",
+                    retry_count, backoff_secs, error_type
+                );
+
+                tokio::time::sleep(Duration::from_secs(backoff_secs as u64)).await;
+                info!("🔄 开始第 {} 次重新连接 gRPC...", retry_count);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// 健康检查任务：定期检查连接状态和最后接收消息的时间
+async fn health_check_task(interval: Duration) {
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let is_healthy = CONNECTION_HEALTHY.load(Ordering::Relaxed);
+        let last_msg_time = LAST_MESSAGE_TIME.load(Ordering::Relaxed);
+        let total_reconnects = TOTAL_RECONNECTS.load(Ordering::Relaxed);
+        let total_messages = TOTAL_MESSAGES.load(Ordering::Relaxed);
+
+        if last_msg_time == 0 {
+            warn!("⚠️  健康检查: 尚未接收到任何消息");
+            continue;
+        }
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let seconds_since_last_msg = now_secs.saturating_sub(last_msg_time);
+
+        if is_healthy {
+            if seconds_since_last_msg > 300 {
+                // 5分钟没收到消息
+                error!(
+                    "🚨 健康检查告警: 连接状态显示正常，但已 {} 秒未收到消息！",
+                    seconds_since_last_msg
+                );
+                error!("   可能原因: 订阅过滤器不匹配、网络静默、或数据流异常");
+            } else if seconds_since_last_msg > 120 {
+                // 2分钟没收到消息
+                warn!(
+                    "⚠️  健康检查提醒: 已 {} 秒未收到消息",
+                    seconds_since_last_msg
+                );
+            } else {
+                info!(
+                    "✅ 健康检查: 连接正常 | 最后消息: {}秒前 | 总重连: {} | 总消息: {}",
+                    seconds_since_last_msg, total_reconnects, total_messages
+                );
+            }
+        } else {
+            warn!(
+                "🔴 健康检查: 连接断开中 | 最后消息: {}秒前 | 总重连: {}",
+                seconds_since_last_msg, total_reconnects
+            );
+        }
+    }
+}
+
+async fn subscribe_nonce_and_transaction_inner(
+    nonce_accounts: Vec<Pubkey>,
+    payer_pubkeys: Vec<Pubkey>,
+) -> Result<(), anyhow::Error> {
+    info!("🔧 初始化 nonce 账户和 payer 监控...");
+
     for nonce_account in &nonce_accounts {
         init_nonce(*nonce_account).await;
-        info!("Starting to monitor account: {}", nonce_account);
+        info!("   📌 监控 nonce 账户: {}", nonce_account);
     }
+
+    for payer in &payer_pubkeys {
+        info!("   💰 监控 payer 账户: {}", payer);
+    }
+
     tokio::spawn(sync_nonce_for_every(
         Duration::from_secs(30),
         nonce_accounts.clone(),
@@ -219,12 +410,30 @@ pub async fn subscribe_nonce_and_transaction(
         commitment: Some(CommitmentLevel::Confirmed.into()),
         ..Default::default()
     };
-    info!("building grpc stream to: {}", *ENDPOINT);
+    info!("🔌 建立 gRPC 订阅流: {}", *ENDPOINT);
     let (mut _subscribe_tx, mut stream) = client
         .subscribe_with_request(Some(subscribe_request))
         .await?;
 
+    info!("✅ gRPC 订阅流已建立，开始接收消息...");
+    CONNECTION_HEALTHY.store(true, Ordering::Relaxed);
+
+    let mut message_count = 0u64;
+    let start_time = Instant::now();
+    let mut last_ping_time = Instant::now();
+
     while let Some(message) = stream.next().await {
+        // 更新最后消息时间
+        LAST_MESSAGE_TIME.store(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            Ordering::Relaxed,
+        );
+
+        message_count += 1;
+        TOTAL_MESSAGES.fetch_add(1, Ordering::Relaxed);
         match message {
             Ok(msg) => match msg.update_oneof {
                 // 监听nonce账户
@@ -292,10 +501,21 @@ pub async fn subscribe_nonce_and_transaction(
                     }
                 }
                 Some(UpdateOneof::Ping(_)) => {
-                    // info!("ping ...");
+                    let ping_interval = last_ping_time.elapsed();
+                    last_ping_time = Instant::now();
+
+                    // 每10个ping记录一次（避免日志过多）
+                    if message_count % 10 == 0 {
+                        info!(
+                            "💓 收到 Ping 心跳 | 间隔: {:.1}s | 本次连接: {:.0}s | 消息数: {}",
+                            ping_interval.as_secs_f64(),
+                            start_time.elapsed().as_secs_f64(),
+                            message_count
+                        );
+                    }
                 }
                 _ => {}
-            }
+            },
             Err(error) => {
                 println!("blacklist_monitor error: {:?}", error);
                 break;
@@ -307,16 +527,62 @@ pub async fn subscribe_nonce_and_transaction(
 }
 
 async fn setup_client() -> Result<GeyserGrpcClient<impl Interceptor>, anyhow::Error> {
-    info!("Connecting to gRPC endpoint: {}", &*ENDPOINT);
+    info!("🔌 正在连接 gRPC 端点: {}", &*ENDPOINT);
 
-    // Build the gRPC client with TLS config
+    let keep_alive_interval = env::var("GRPC_KEEP_ALIVE_INTERVAL_SECS")
+        .unwrap_or_else(|_| "30".to_string())
+        .parse::<u64>()
+        .unwrap_or(30);
+
+    let keep_alive_timeout = env::var("GRPC_KEEP_ALIVE_TIMEOUT_SECS")
+        .unwrap_or_else(|_| "10".to_string())
+        .parse::<u64>()
+        .unwrap_or(10);
+
+    let connect_timeout = env::var("GRPC_CONNECT_TIMEOUT_SECS")
+        .unwrap_or_else(|_| "15".to_string())
+        .parse::<u64>()
+        .unwrap_or(15);
+
+    let request_timeout = env::var("GRPC_REQUEST_TIMEOUT_SECS")
+        .unwrap_or_else(|_| "60".to_string())
+        .parse::<u64>()
+        .unwrap_or(60);
+
+    info!("   Keep-Alive 间隔: {}秒", keep_alive_interval);
+    info!("   Keep-Alive 超时: {}秒", keep_alive_timeout);
+    info!("   连接超时: {}秒", connect_timeout);
+    info!("   请求超时: {}秒", request_timeout);
+
+    // Build the gRPC client with TLS config and HTTP/2 keep-alive
     let client = GeyserGrpcClient::build_from_shared(ENDPOINT.to_string())?
         // .x_token(Some(AUTH_TOKEN.to_string()))?
         .tls_config(ClientTlsConfig::new().with_native_roots())?
+        // 配置 HTTP/2 keep-alive 防止 broken pipe
+        .http2_keep_alive_interval(Duration::from_secs(keep_alive_interval))
+        .keep_alive_timeout(Duration::from_secs(keep_alive_timeout))
+        .keep_alive_while_idle(true) // 即使空闲也保持连接
+        .connect_timeout(Duration::from_secs(connect_timeout))
+        .timeout(Duration::from_secs(request_timeout))
         .connect()
         .await?;
 
+    info!("✅ gRPC 客户端连接成功！");
     Ok(client)
+}
+
+/// 获取当前连接健康状态（供外部调用）
+pub fn is_connection_healthy() -> bool {
+    CONNECTION_HEALTHY.load(Ordering::Relaxed)
+}
+
+/// 获取统计信息（供外部调用）
+pub fn get_connection_stats() -> (u64, u64, u64) {
+    (
+        TOTAL_RECONNECTS.load(Ordering::Relaxed),
+        TOTAL_MESSAGES.load(Ordering::Relaxed),
+        LAST_MESSAGE_TIME.load(Ordering::Relaxed),
+    )
 }
 
 async fn sync_nonce_for_every(time: Duration, nonce_accounts: Vec<Pubkey>) {
