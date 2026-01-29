@@ -216,7 +216,7 @@ pub async fn subscribe_nonce_and_transaction(
             offset: 40,
             length: 32,
         }],
-        commitment: Some(CommitmentLevel::Processed.into()),
+        commitment: Some(CommitmentLevel::Confirmed.into()),
         ..Default::default()
     };
     info!("building grpc stream to: {}", *ENDPOINT);
@@ -295,7 +295,7 @@ pub async fn subscribe_nonce_and_transaction(
                     // info!("ping ...");
                 }
                 _ => {}
-            },
+            }
             Err(error) => {
                 println!("blacklist_monitor error: {:?}", error);
                 break;
