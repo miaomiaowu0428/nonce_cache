@@ -407,7 +407,7 @@ async fn subscribe_nonce_and_transaction_inner(
             offset: 40,
             length: 32,
         }],
-        commitment: Some(CommitmentLevel::Confirmed.into()),
+        commitment: Some(CommitmentLevel::Processed.into()),
         ..Default::default()
     };
     info!("🔌 建立 gRPC 订阅流: {}", *ENDPOINT);
