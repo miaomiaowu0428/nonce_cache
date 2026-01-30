@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use crate::self_balance::{set_monitored_payers, update_balances_from_tx};
 
@@ -163,6 +163,17 @@ pub async fn subscribe_nonce_and_transaction(
     nonce_accounts: Vec<Pubkey>,
     payer_pubkeys: Vec<Pubkey>,
 ) -> Result<(), anyhow::Error> {
+    let nonce_accounts = nonce_accounts
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let payer_pubkeys = payer_pubkeys
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
     let auto_reconnect = env::var("GRPC_AUTO_RECONNECT")
         .unwrap_or_else(|_| "true".to_string())
         .parse::<bool>()
