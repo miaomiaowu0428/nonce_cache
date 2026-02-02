@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use crate::tx_result_channel;
 use log::info;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::RwLock;
 use utils::balance_change::balance_changes_of_grpc;
-use crate::tx_result_channel;
+use utils::parse_rpc_fetched_json::BalanceChange;
 
 // ============ 本位币配置 ============
 // 按优先级排序：优先匹配靠前的币种作为本位币
@@ -299,34 +300,6 @@ static MEMORY_CACHE: LazyLock<RwLock<HashMap<(Pubkey, Pubkey), TokenPnL>>> =
 
 /// 监控的地址列表
 static MONITORED_TARGETS: LazyLock<RwLock<Vec<Pubkey>>> = LazyLock::new(|| RwLock::new(Vec::new()));
-
-/// BalanceChange 辅助结构，与 utils 中的定义兼容
-#[derive(Debug, Clone, Default)]
-pub struct BalanceChange {
-    pub owner: Pubkey,
-    pub mint: Pubkey,
-    pub pre_balance: u64,
-    pub after_balance: u64,
-    pub change: i128,
-    pub decimal: u8,
-}
-
-impl BalanceChange {
-    pub fn combine(&self, other: &BalanceChange) -> Option<BalanceChange> {
-        // 安全检查：确保是同一个 owner 和相同的 decimal
-        if self.owner != other.owner || self.decimal != other.decimal {
-            return None;
-        }
-        Some(BalanceChange {
-            owner: self.owner,
-            mint: self.mint,
-            pre_balance: self.pre_balance + other.pre_balance,
-            after_balance: self.after_balance + other.after_balance,
-            change: self.change + other.change,
-            decimal: self.decimal,
-        })
-    }
-}
 
 /// 为 TransactionFormat 实现 GetAccounts trait
 pub trait GetAccounts {

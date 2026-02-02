@@ -2,7 +2,7 @@ use chrono::{DateTime, Local};
 use solana_sdk::pubkey::Pubkey;
 use std::env;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
