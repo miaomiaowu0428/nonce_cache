@@ -6,7 +6,7 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::RwLock;
-
+use utils::balance_change::balance_changes_of_grpc;
 use crate::tx_result_channel;
 
 // ============ 本位币配置 ============
@@ -300,96 +300,6 @@ static MEMORY_CACHE: LazyLock<RwLock<HashMap<(Pubkey, Pubkey), TokenPnL>>> =
 /// 监控的地址列表
 static MONITORED_TARGETS: LazyLock<RwLock<Vec<Pubkey>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
-/// 从 TransactionFormat 提取余额变化
-/// 参考 utils::parse_rpc_fetched_json 的实现，但直接使用 TransactionFormat 的字段
-fn extract_balance_changes(
-    tx: &grpc_client::TransactionFormat,
-) -> Result<Vec<BalanceChange>, anyhow::Error> {
-    use std::collections::HashSet;
-
-    let Some(meta) = &tx.meta else {
-        return Err(anyhow::anyhow!("meta not found"));
-    };
-
-    let account_keys = &tx.account_keys;
-
-    // ===============================
-    // 1 SOL balance diff
-    // ===============================
-    let mut sol_changes = Vec::new();
-    for (i, owner) in account_keys.iter().enumerate() {
-        let pre = *meta.pre_balances.get(i).unwrap_or(&0);
-        let post = *meta.post_balances.get(i).unwrap_or(&0);
-
-        if pre != post {
-            sol_changes.push(BalanceChange {
-                owner: *owner,
-                mint: Pubkey::default(),
-                pre_balance: pre,
-                after_balance: post,
-                change: post as i128 - pre as i128,
-                decimal: 9,
-            });
-        }
-    }
-
-    // ===============================
-    // 2 Token balance diff
-    // ===============================
-    let mut token_changes = Vec::new();
-    if let (Some(pre_tokens), Some(post_tokens)) =
-        (&meta.pre_token_balances, &meta.post_token_balances)
-    {
-        let mut all_keys = HashSet::new();
-        let mut pre_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
-        let mut post_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
-        let mut decimals_map: HashMap<(Pubkey, Pubkey), u8> = HashMap::new();
-
-        for tb in pre_tokens {
-            let owner = tb.owner.parse::<Pubkey>()?;
-            let mint = tb.mint.parse::<Pubkey>()?;
-            let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
-            pre_map.insert((owner, mint), amount);
-            decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
-            all_keys.insert((owner, mint));
-        }
-
-        for tb in post_tokens {
-            let owner = tb.owner.parse::<Pubkey>()?;
-            let mint = tb.mint.parse::<Pubkey>()?;
-            let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
-            post_map.insert((owner, mint), amount);
-            decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
-            all_keys.insert((owner, mint));
-        }
-
-        for key in all_keys {
-            let pre = *pre_map.get(&key).unwrap_or(&0);
-            let post = *post_map.get(&key).unwrap_or(&0);
-            let decimal = *decimals_map.get(&key).unwrap_or(&0);
-
-            if pre != post {
-                token_changes.push(BalanceChange {
-                    owner: key.0,
-                    mint: key.1,
-                    pre_balance: pre,
-                    after_balance: post,
-                    change: post as i128 - pre as i128,
-                    decimal,
-                });
-            }
-        }
-    }
-
-    // ===============================
-    // 3 合并结果
-    // ===============================
-    let mut changes = sol_changes;
-    changes.extend(token_changes);
-
-    Ok(changes)
-}
-
 /// BalanceChange 辅助结构，与 utils 中的定义兼容
 #[derive(Debug, Clone, Default)]
 pub struct BalanceChange {
@@ -437,7 +347,7 @@ async fn process_success_transaction(
     use log::info;
 
     // 获取余额变化
-    let balance_changes = extract_balance_changes(tx)?;
+    let balance_changes = balance_changes_of_grpc(tx)?;
     let self_balance_changes: Vec<BalanceChange> = balance_changes
         .into_iter()
         .filter(|change| change.owner == target)
