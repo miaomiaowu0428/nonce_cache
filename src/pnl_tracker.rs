@@ -317,8 +317,6 @@ async fn process_success_transaction(
     tx: &grpc_client::TransactionFormat,
     target: Pubkey,
 ) -> Result<(), anyhow::Error> {
-    use log::info;
-
     // 获取余额变化
     let balance_changes = balance_changes_of_grpc(tx)?;
     let self_balance_changes: Vec<BalanceChange> = balance_changes
