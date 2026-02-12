@@ -60,6 +60,46 @@ global_broadcast! {
     }
 }
 
+/// 交易确认错误类型
+#[derive(Clone, Debug)]
+pub enum TxConfirmError {
+    /// 超时：在指定时间内没有收到交易结果
+    Timeout {
+        expected_sigs: Vec<Signature>,
+        timeout_secs: u64,
+    },
+    /// 交易失败：收到失败状态
+    Failed {
+        signature: Signature,
+        tx: TransactionFormat,
+        error_msg: String,
+    },
+    /// Meta 缺失：交易没有 meta 数据
+    MetaMissing {
+        signature: Signature,
+        tx: TransactionFormat,
+    },
+    /// 其他错误
+    Other(String),
+}
+
+impl std::fmt::Display for TxConfirmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout { expected_sigs, timeout_secs } => {
+                write!(f, "交易超时: 等待 {}秒，期望签名: {:?}", timeout_secs, expected_sigs)
+            }
+            Self::Failed { signature, error_msg, .. } => {
+                write!(f, "交易失败: {} - {}", signature, error_msg)
+            }
+            Self::MetaMissing { signature, .. } => {
+                write!(f, "交易 Meta 缺失: {}", signature)
+            }
+            Self::Other(msg) => write!(f, "其他错误: {}", msg),
+        }
+    }
+}
+
 // Replace with your QuickNode Yellowstone gRPC endpoint
 const ENDPOINT: LazyLock<String> = LazyLock::new(|| {
     std::env::var("YELLOWSTONE_GRPC_URL").unwrap_or_else(|_| {
@@ -76,15 +116,45 @@ pub static JSON_RPC_CLIENT: LazyLock<Arc<RpcClient>> = LazyLock::new(|| {
     ))
 });
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum TradeStatus {
-    Success(Signature),
-    Failed(String, String), // (tx, meta)
+    /// 交易成功
+    Success {
+        signature: Signature,
+        tx: TransactionFormat,
+    },
+    /// 交易失败：有 meta 且 status 为 Err
+    Failed {
+        signature: Signature,
+        tx: TransactionFormat,
+        error_msg: String,
+    },
+    /// Meta 缺失：交易没有 meta 数据
+    MetaMissing {
+        signature: Signature,
+        tx: TransactionFormat,
+    },
 }
 
 impl TradeStatus {
     pub fn success(&self) -> bool {
-        matches!(self, TradeStatus::Success(_))
+        matches!(self, TradeStatus::Success { .. })
+    }
+    
+    pub fn signature(&self) -> Signature {
+        match self {
+            TradeStatus::Success { signature, .. } => *signature,
+            TradeStatus::Failed { signature, .. } => *signature,
+            TradeStatus::MetaMissing { signature, .. } => *signature,
+        }
+    }
+    
+    pub fn tx(&self) -> &TransactionFormat {
+        match self {
+            TradeStatus::Success { tx, .. } => tx,
+            TradeStatus::Failed { tx, .. } => tx,
+            TradeStatus::MetaMissing { tx, .. } => tx,
+        }
     }
 }
 
@@ -474,38 +544,48 @@ async fn subscribe_nonce_and_transaction_inner(
                 Some(UpdateOneof::Transaction(tnx)) => {
                     let tx: TransactionFormat = tnx.into();
                     let sig = tx.signature;
-                    info!("检测到交易: {}", sig); // 👈 显示所有检测到的交易
-                    let Some(meta) = &tx.meta else {
-                        let event = tx_result_channel::TxResultEvent {
-                            signature: sig,
-                            tx,
-                            status: TradeStatus::Failed(
-                                "tx failed".to_string(),
-                                "meta not found".to_string(),
-                            ),
-                        };
-                        let _ = tx_result_channel::send(event);
-                        continue;
-                    };
-                    match &meta.status {
-                        Ok(_) => {
-                            info!("交易成功: {:?}", sig);
-                            update_balances_from_tx(&tx).await;
-                            let event = tx_result_channel::TxResultEvent {
-                                signature: sig,
-                                tx,
-                                status: TradeStatus::Success(sig.clone()),
-                            };
-                            let _ = tx_result_channel::send(event);
+                    info!("检测到交易: {}", sig);
+                    
+                    match &tx.meta {
+                        Some(meta) => {
+                            match &meta.status {
+                                Ok(_) => {
+                                    info!("交易成功: {:?}", sig);
+                                    update_balances_from_tx(&tx).await;
+                                    let event = tx_result_channel::TxResultEvent {
+                                        signature: sig,
+                                        tx: tx.clone(),
+                                        status: TradeStatus::Success {
+                                            signature: sig,
+                                            tx: tx.clone(),
+                                        },
+                                    };
+                                    let _ = tx_result_channel::send(event);
+                                }
+                                Err(err) => {
+                                    info!("交易失败: {:?}, 错误: {:?}", sig, err);
+                                    let event = tx_result_channel::TxResultEvent {
+                                        signature: sig,
+                                        tx: tx.clone(),
+                                        status: TradeStatus::Failed {
+                                            signature: sig,
+                                            tx: tx.clone(),
+                                            error_msg: format!("{:?}", err),
+                                        },
+                                    };
+                                    let _ = tx_result_channel::send(event);
+                                }
+                            }
                         }
-                        Err(err) => {
-                            info!("交易失败: {:?}, 错误: {:?}", sig, err);
-                            let tx_str = format!("{:?}", tx);
-                            let meta_str = format!("{:?}", meta);
+                        None => {
+                            warn!("交易 Meta 缺失: {:?}", sig);
                             let event = tx_result_channel::TxResultEvent {
                                 signature: sig,
-                                tx,
-                                status: TradeStatus::Failed(tx_str, meta_str),
+                                tx: tx.clone(),
+                                status: TradeStatus::MetaMissing {
+                                    signature: sig,
+                                    tx: tx.clone(),
+                                },
                             };
                             let _ = tx_result_channel::send(event);
                         }

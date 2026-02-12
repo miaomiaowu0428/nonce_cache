@@ -4,7 +4,7 @@ use grpc_client::TransactionFormat;
 use log::{error, info};
 use solana_sdk::signature::Signature;
 
-use crate::{TradeStatus, tx_result_channel::TxResultEvent};
+use crate::{TxConfirmError, TradeStatus, tx_result_channel::TxResultEvent};
 
 /// 监听交易结果的通用函数
 ///
@@ -14,29 +14,37 @@ use crate::{TradeStatus, tx_result_channel::TxResultEvent};
 /// - `timeout_secs`: 超时时间（秒）
 ///
 /// # 返回
-/// - `Ok(Signature)`: 成功获取到交易签名
-/// - `Err(...)`: 超时或其他错误
+/// - `Ok((Signature, TransactionFormat))`: 成功获取到交易签名和内容
+/// - `Err(TxConfirmError)`: 详细的错误信息（超时/失败/Meta缺失等）
 pub async fn confirm_tx(
     mut tx_result_rx: tokio::sync::broadcast::Receiver<TxResultEvent>,
     expected_signatures: HashSet<Signature>,
     timeout_secs: u64,
-) -> Result<(Signature, TransactionFormat), Box<dyn std::error::Error + Sync + Send>> {
+) -> Result<(Signature, TransactionFormat), TxConfirmError> {
     info!("confirming: {expected_signatures:#?}");
     let res = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         loop {
             if let Ok(TxResultEvent {
                 signature,
-                tx,
+                tx: _,
                 status,
             }) = tx_result_rx.recv().await
             {
                 if expected_signatures.contains(&signature) {
                     info!("交易确认: {:?} -> {:#?}", signature, status);
                     match status {
-                        TradeStatus::Success(_) => return Ok((signature, tx)),
-                        TradeStatus::Failed(_, _) => {
-                            error!("交易失败: {:?}", signature);
-                            return Err("交易失败".into());
+                        TradeStatus::Success { signature, tx } => return Ok((signature, tx)),
+                        TradeStatus::Failed { signature, tx, error_msg } => {
+                            error!("交易失败: {:?} - {}", signature, error_msg);
+                            return Err(TxConfirmError::Failed {
+                                signature,
+                                tx,
+                                error_msg,
+                            });
+                        }
+                        TradeStatus::MetaMissing { signature, tx } => {
+                            error!("交易 Meta 缺失: {:?}", signature);
+                            return Err(TxConfirmError::MetaMissing { signature, tx });
                         }
                     }
                 } else {
@@ -49,8 +57,11 @@ pub async fn confirm_tx(
     .await;
 
     match res {
-        Ok(Ok((sig, tx))) => Ok((sig, tx)),
+        Ok(Ok(result)) => Ok(result),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(format!("交易监听超时").into()),
+        Err(_) => Err(TxConfirmError::Timeout {
+            expected_sigs: expected_signatures.into_iter().collect(),
+            timeout_secs,
+        }),
     }
 }
