@@ -86,10 +86,21 @@ pub enum TxConfirmError {
 impl std::fmt::Display for TxConfirmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Timeout { expected_sigs, timeout_secs } => {
-                write!(f, "交易超时: 等待 {}秒，期望签名: {:?}", timeout_secs, expected_sigs)
+            Self::Timeout {
+                expected_sigs,
+                timeout_secs,
+            } => {
+                write!(
+                    f,
+                    "交易超时: 等待 {}秒，期望签名: {:?}",
+                    timeout_secs, expected_sigs
+                )
             }
-            Self::Failed { signature, error_msg, .. } => {
+            Self::Failed {
+                signature,
+                error_msg,
+                ..
+            } => {
                 write!(f, "交易失败: {} - {}", signature, error_msg)
             }
             Self::MetaMissing { signature, .. } => {
@@ -97,6 +108,27 @@ impl std::fmt::Display for TxConfirmError {
             }
             Self::Other(msg) => write!(f, "其他错误: {}", msg),
         }
+    }
+}
+
+impl std::error::Error for TxConfirmError {}
+
+// 自动转换实现
+impl From<Box<dyn std::error::Error + Send + Sync>> for TxConfirmError {
+    fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        Self::Other(e.to_string())
+    }
+}
+
+impl From<&str> for TxConfirmError {
+    fn from(s: &str) -> Self {
+        Self::Other(s.to_string())
+    }
+}
+
+impl From<String> for TxConfirmError {
+    fn from(s: String) -> Self {
+        Self::Other(s)
     }
 }
 
@@ -140,7 +172,7 @@ impl TradeStatus {
     pub fn success(&self) -> bool {
         matches!(self, TradeStatus::Success { .. })
     }
-    
+
     pub fn signature(&self) -> Signature {
         match self {
             TradeStatus::Success { signature, .. } => *signature,
@@ -148,7 +180,7 @@ impl TradeStatus {
             TradeStatus::MetaMissing { signature, .. } => *signature,
         }
     }
-    
+
     pub fn tx(&self) -> &TransactionFormat {
         match self {
             TradeStatus::Success { tx, .. } => tx,
@@ -545,38 +577,36 @@ async fn subscribe_nonce_and_transaction_inner(
                     let tx: TransactionFormat = tnx.into();
                     let sig = tx.signature;
                     info!("检测到交易: {}", sig);
-                    
+
                     match &tx.meta {
-                        Some(meta) => {
-                            match &meta.status {
-                                Ok(_) => {
-                                    info!("交易成功: {:?}", sig);
-                                    update_balances_from_tx(&tx).await;
-                                    let event = tx_result_channel::TxResultEvent {
+                        Some(meta) => match &meta.status {
+                            Ok(_) => {
+                                info!("交易成功: {:?}", sig);
+                                update_balances_from_tx(&tx).await;
+                                let event = tx_result_channel::TxResultEvent {
+                                    signature: sig,
+                                    tx: tx.clone(),
+                                    status: TradeStatus::Success {
                                         signature: sig,
                                         tx: tx.clone(),
-                                        status: TradeStatus::Success {
-                                            signature: sig,
-                                            tx: tx.clone(),
-                                        },
-                                    };
-                                    let _ = tx_result_channel::send(event);
-                                }
-                                Err(err) => {
-                                    info!("交易失败: {:?}, 错误: {:?}", sig, err);
-                                    let event = tx_result_channel::TxResultEvent {
-                                        signature: sig,
-                                        tx: tx.clone(),
-                                        status: TradeStatus::Failed {
-                                            signature: sig,
-                                            tx: tx.clone(),
-                                            error_msg: format!("{:?}", err),
-                                        },
-                                    };
-                                    let _ = tx_result_channel::send(event);
-                                }
+                                    },
+                                };
+                                let _ = tx_result_channel::send(event);
                             }
-                        }
+                            Err(err) => {
+                                info!("交易失败: {:?}, 错误: {:?}", sig, err);
+                                let event = tx_result_channel::TxResultEvent {
+                                    signature: sig,
+                                    tx: tx.clone(),
+                                    status: TradeStatus::Failed {
+                                        signature: sig,
+                                        tx: tx.clone(),
+                                        error_msg: format!("{:?}", err),
+                                    },
+                                };
+                                let _ = tx_result_channel::send(event);
+                            }
+                        },
                         None => {
                             warn!("交易 Meta 缺失: {:?}", sig);
                             let event = tx_result_channel::TxResultEvent {

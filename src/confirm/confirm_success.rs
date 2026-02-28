@@ -4,7 +4,7 @@ use grpc_client::TransactionFormat;
 use log::{error, info};
 use solana_sdk::signature::Signature;
 
-use crate::{TxConfirmError, TradeStatus, tx_result_channel::TxResultEvent};
+use crate::{TradeStatus, TxConfirmError, tx_result_channel::TxResultEvent};
 
 /// 监听交易结果的函数，只关心成功的交易
 /// 失败的交易会被忽略，继续等待其他交易
@@ -34,9 +34,16 @@ pub async fn confirm_success_tx(
                     info!("交易确认: {:?} -> {:#?}", sig, status);
                     match status {
                         TradeStatus::Success { signature, tx } => return Ok((signature, tx)),
-                        TradeStatus::Failed { signature, error_msg, .. } => {
+                        TradeStatus::Failed {
+                            signature,
+                            error_msg,
+                            ..
+                        } => {
                             // 只记录失败，但继续等待其他交易的成功
-                            error!("交易失败: {:?} - {}，继续等待其他交易", signature, error_msg);
+                            error!(
+                                "交易失败: {:?} - {}，继续等待其他交易",
+                                signature, error_msg
+                            );
                             continue;
                         }
                         TradeStatus::MetaMissing { signature, .. } => {

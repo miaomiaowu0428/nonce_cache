@@ -65,13 +65,10 @@ pub async fn update_balances_from_tx(tx: &TransactionFormat) {
                 if monitored.contains(&owner_pk) {
                     if let Ok(mint_pk) = Pubkey::from_str(&tb.mint) {
                         let key = (owner_pk, mint_pk);
-                        
+
                         // 如果这个账户在 pre 中有余额，但 post 中没出现，说明清仓归零了
                         if !post_keys.contains(&key) {
-                            info!(
-                                "[余额归零] 账户: {}, Mint: {}, 清仓完成",
-                                owner_pk, mint_pk
-                            );
+                            info!("[余额归零] 账户: {}, Mint: {}, 清仓完成", owner_pk, mint_pk);
                             SELF_TOKEN_BALANCE.insert(key, 0).await;
                         }
                     }
