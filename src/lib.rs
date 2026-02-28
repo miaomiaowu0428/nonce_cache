@@ -113,6 +113,62 @@ impl std::fmt::Display for TxConfirmError {
 
 impl std::error::Error for TxConfirmError {}
 
+impl TxConfirmError {
+    /// 如果不是超时错误，执行提供的闭包
+    ///
+    /// # 设计理念
+    /// 超时通常表示 nonce 被抢占（可能是其他机器买走了订单），这种情况不需要发送告警通知。
+    /// 只有真正的失败（Failed/MetaMissing/Other）才需要用户关注。
+    ///
+    /// # 示例
+    /// ```rust,no_run
+    /// match send_fast(&ixs, &ctx, None, cu).await {
+    ///     Ok(sig) => { /* 处理成功 */ }
+    ///     Err(e) => {
+    ///         e.if_not_timeout(|| {
+    ///             // 只在非超时情况下发送 TG 通知
+    ///             send_tg_alert(&format!("交易失败: {}", e));
+    ///         });
+    ///     }
+    /// }
+    /// ```
+    pub fn if_not_timeout<F: FnOnce()>(self, f: F) {
+        if !matches!(self, TxConfirmError::Timeout { .. }) {
+            f();
+        }
+    }
+
+    /// 如果不是超时错误，执行提供的异步闭包
+    ///
+    /// 异步版本，传入的闭包返回 Future
+    ///
+    /// # 示例
+    /// ```rust,no_run
+    /// match send_fast(&ixs, &ctx, None, cu).await {
+    ///     Ok(sig) => { /* 处理成功 */ }
+    ///     Err(e) => {
+    ///         e.if_not_timeout_async(async {
+    ///             send_tg_alert(&format!("交易失败: {}", e)).await;
+    ///         }).await;
+    ///     }
+    /// }
+    /// ```
+    pub async fn if_not_timeout_async<F, Fut>(self, f: F)
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        if !matches!(self, TxConfirmError::Timeout { .. }) {
+            f().await;
+        }
+    }
+
+    /// 判断是否为超时错误
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, TxConfirmError::Timeout { .. })
+    }
+}
+
 // 自动转换实现
 impl From<Box<dyn std::error::Error + Send + Sync>> for TxConfirmError {
     fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
