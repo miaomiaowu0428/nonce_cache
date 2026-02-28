@@ -140,7 +140,7 @@ impl TxConfirmError {
 
     /// 如果不是超时错误，执行提供的异步闭包
     ///
-    /// 异步版本，传入的闭包返回 Future
+    /// 异步版本，接收一个 Future
     ///
     /// # 示例
     /// ```rust,no_run
@@ -153,13 +153,12 @@ impl TxConfirmError {
     ///     }
     /// }
     /// ```
-    pub async fn if_not_timeout_async<F, Fut>(self, f: F)
+    pub async fn if_not_timeout_async<F>(self, f: F)
     where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = ()>,
+        F: std::future::Future<Output = ()>,
     {
         if !matches!(self, TxConfirmError::Timeout { .. }) {
-            f().await;
+            f.await;
         }
     }
 
