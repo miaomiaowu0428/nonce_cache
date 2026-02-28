@@ -121,7 +121,7 @@ impl TxConfirmError {
     /// 只有真正的失败（Failed/MetaMissing/Other）才需要用户关注。
     ///
     /// # 参数
-    /// - 闭包接收 `&TxConfirmError`，可以访问错误的详细信息
+    /// - 闭包接收 `TxConfirmError`（owned），可以自由使用错误信息
     ///
     /// # 示例
     /// ```rust,no_run
@@ -129,13 +129,13 @@ impl TxConfirmError {
     ///     Ok(sig) => { /* 处理成功 */ }
     ///     Err(e) => {
     ///         e.if_not_timeout(|err| {
-    ///             // 只在非超时情况下发送 TG 通知，可以访问 err 的详细信息
+    ///             // 只在非超时情况下发送 TG 通知，err 是 owned 的
     ///             send_tg_alert(&format!("交易失败: {}", err));
     ///         });
     ///     }
     /// }
     /// ```
-    pub fn if_not_timeout<F: FnOnce(&Self)>(&self, f: F) {
+    pub fn if_not_timeout<F: FnOnce(Self)>(self, f: F) {
         if !matches!(self, TxConfirmError::Timeout { .. }) {
             f(self);
         }
@@ -143,10 +143,10 @@ impl TxConfirmError {
 
     /// 如果不是超时错误，执行提供的异步闭包
     ///
-    /// 异步版本，闭包接收 `&TxConfirmError` 并返回 Future
+    /// 异步版本，闭包接收 owned `TxConfirmError` 并返回 Future
     ///
     /// # 参数
-    /// - 闭包接收 `&TxConfirmError`，可以访问错误的详细信息
+    /// - 闭包接收 `TxConfirmError`（owned），可以在 async move block 中自由使用
     ///
     /// # 示例
     /// ```rust,no_run
@@ -154,14 +154,15 @@ impl TxConfirmError {
     ///     Ok(sig) => { /* 处理成功 */ }
     ///     Err(e) => {
     ///         e.if_not_timeout_async(|err| async move {
+    ///             // err 是 owned，可以安全地 move 进 async block
     ///             send_tg_alert(&format!("交易失败: {}", err)).await;
     ///         }).await;
     ///     }
     /// }
     /// ```
-    pub async fn if_not_timeout_async<F, Fut>(&self, f: F)
+    pub async fn if_not_timeout_async<F, Fut>(self, f: F)
     where
-        F: FnOnce(&Self) -> Fut,
+        F: FnOnce(Self) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
         if !matches!(self, TxConfirmError::Timeout { .. }) {
