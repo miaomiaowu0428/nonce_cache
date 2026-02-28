@@ -120,45 +120,52 @@ impl TxConfirmError {
     /// 超时通常表示 nonce 被抢占（可能是其他机器买走了订单），这种情况不需要发送告警通知。
     /// 只有真正的失败（Failed/MetaMissing/Other）才需要用户关注。
     ///
+    /// # 参数
+    /// - 闭包接收 `&TxConfirmError`，可以访问错误的详细信息
+    ///
     /// # 示例
     /// ```rust,no_run
     /// match send_fast(&ixs, &ctx, None, cu).await {
     ///     Ok(sig) => { /* 处理成功 */ }
     ///     Err(e) => {
-    ///         e.if_not_timeout(|| {
-    ///             // 只在非超时情况下发送 TG 通知
-    ///             send_tg_alert(&format!("交易失败: {}", e));
+    ///         e.if_not_timeout(|err| {
+    ///             // 只在非超时情况下发送 TG 通知，可以访问 err 的详细信息
+    ///             send_tg_alert(&format!("交易失败: {}", err));
     ///         });
     ///     }
     /// }
     /// ```
-    pub fn if_not_timeout<F: FnOnce()>(self, f: F) {
+    pub fn if_not_timeout<F: FnOnce(&Self)>(&self, f: F) {
         if !matches!(self, TxConfirmError::Timeout { .. }) {
-            f();
+            f(self);
         }
     }
 
     /// 如果不是超时错误，执行提供的异步闭包
     ///
-    /// 异步版本，接收一个 Future
+    /// 异步版本，闭包接收 `&TxConfirmError` 并返回 Future
+    ///
+    /// # 参数
+    /// - 闭包接收 `&TxConfirmError`，可以访问错误的详细信息
     ///
     /// # 示例
     /// ```rust,no_run
     /// match send_fast(&ixs, &ctx, None, cu).await {
     ///     Ok(sig) => { /* 处理成功 */ }
     ///     Err(e) => {
-    ///         e.if_not_timeout_async(async {
-    ///             send_tg_alert(&format!("交易失败: {}", e)).await;
+    ///         e.if_not_timeout_async(|err| async move {
+    ///             send_tg_alert(&format!("交易失败: {}", err)).await;
     ///         }).await;
     ///     }
     /// }
     /// ```
-    pub async fn if_not_timeout_async<F>(self, f: F)
+    pub async fn if_not_timeout_async<F, Fut>(&self, f: F)
     where
-        F: std::future::Future<Output = ()>,
+        F: FnOnce(&Self) -> Fut,
+        Fut: std::future::Future<Output = ()>,
     {
         if !matches!(self, TxConfirmError::Timeout { .. }) {
-            f.await;
+            f(self).await;
         }
     }
 
