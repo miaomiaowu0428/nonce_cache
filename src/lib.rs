@@ -10,7 +10,10 @@ use {
     log::{error, info, warn},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_commitment_config::CommitmentConfig,
-    solana_sdk::{hash::Hash, pubkey::Pubkey, signature::Signature},
+    solana_sdk::{
+        hash::Hash, instruction::InstructionError, pubkey::Pubkey, signature::Signature,
+        transaction::TransactionError,
+    },
     std::{
         collections::HashMap,
         env,
@@ -60,124 +63,103 @@ global_broadcast! {
     }
 }
 
-/// 交易失败的详细信息
+/// 交易失败的详细信息（包装 TransactionError）
 #[derive(Clone, Debug)]
 pub struct TxFailureDetail {
-    /// 错误的指令索引（如果是指令错误）
-    pub instruction_index: Option<u8>,
-    /// 自定义错误码（如果是 Custom 错误）
-    pub custom_error_code: Option<u32>,
-    /// 错误描述文本（完整的调试信息）
-    pub error_msg: String,
-    /// 简短的错误类型名称（例如 "InstructionError::Custom", "AccountNotFound"）
-    pub error_type: String,
+    /// 原始的 TransactionError
+    pub error: TransactionError,
 }
 
 impl TxFailureDetail {
-    /// 从交易错误信息解析详细信息（使用 Debug 字符串）
-    pub fn from_error_debug(err_debug: String) -> Self {
-        // 尝试解析指令错误索引
-        let instruction_index = Self::parse_instruction_index(&err_debug);
-        
-        // 尝试解析自定义错误码
-        let custom_error_code = Self::parse_custom_error_code(&err_debug);
-        
-        Self {
-            instruction_index,
-            custom_error_code,
-            error_msg: err_debug.clone(),
-            error_type: Self::extract_error_type(&err_debug),
-        }
+    /// 从 TransactionError 创建
+    pub fn new(error: TransactionError) -> Self {
+        Self { error }
     }
-    
-    /// 从错误字符串中解析指令索引
-    fn parse_instruction_index(error_str: &str) -> Option<u8> {
-        // 匹配类似 "InstructionError(0, ...)" 的模式
-        if let Some(start) = error_str.find("InstructionError(") {
-            let rest = &error_str[start + 17..];
-            if let Some(comma_pos) = rest.find(',') {
-                if let Ok(idx) = rest[..comma_pos].trim().parse::<u8>() {
-                    return Some(idx);
-                }
-            }
-        }
-        None
-    }
-    
-    /// 从错误字符串中解析自定义错误码
-    fn parse_custom_error_code(error_str: &str) -> Option<u32> {
-        // 匹配类似 "Custom(1234)" 或 "Custom { error: 1234 }" 的模式
-        if let Some(start) = error_str.find("Custom") {
-            let rest = &error_str[start..];
-            // 尝试找数字
-            let digits: String = rest.chars()
-                .skip_while(|c| !c.is_numeric())
-                .take_while(|c| c.is_numeric())
-                .collect();
-            if let Ok(code) = digits.parse::<u32>() {
-                return Some(code);
-            }
-        }
-        None
-    }
-    
-    /// 提取错误类型名称
-    fn extract_error_type(error_str: &str) -> String {
-        // 尝试提取主要的错误类型
-        if error_str.contains("InstructionError") {
-            if error_str.contains("Custom") {
-                "InstructionError::Custom".to_string()
-            } else if error_str.contains("InvalidAccountData") {
-                "InstructionError::InvalidAccountData".to_string()
-            } else if error_str.contains("InsufficientFunds") {
-                "InstructionError::InsufficientFunds".to_string()
-            } else if error_str.contains("BorshIoError") {
-                "InstructionError::BorshIoError".to_string()
-            } else {
-                // 尝试提取完整的指令错误类型
-                "InstructionError".to_string()
-            }
-        } else if error_str.contains("DuplicateSignature") {
-            "DuplicateSignature".to_string()
-        } else if error_str.contains("BlockhashNotFound") {
-            "BlockhashNotFound".to_string()
-        } else {
-            error_str.split_whitespace()
-                .nth(0)
-                .unwrap_or("Unknown")
-                .to_string()
-        }
-    }
-    
-    /// 创建一个简单的错误详情（用于非 TransactionError 的情况）
+
+    /// 从错误字符串创建（兜底方案，不应该使用）
     pub fn from_string(msg: String) -> Self {
+        // 这是一个兜底方案，实际应该直接使用 TransactionError
         Self {
-            instruction_index: None,
-            custom_error_code: None,
-            error_type: "Unknown".to_string(),
-            error_msg: msg,
+            error: TransactionError::SanitizeFailure,
         }
     }
-    
+
+    /// 获取指令索引（如果是 InstructionError）
+    pub fn instruction_index(&self) -> Option<u8> {
+        match &self.error {
+            TransactionError::InstructionError(idx, _) => Some(*idx),
+            TransactionError::DuplicateInstruction(idx) => Some(*idx),
+            TransactionError::InsufficientFundsForRent { account_index } => Some(*account_index),
+            TransactionError::ProgramExecutionTemporarilyRestricted { account_index } => {
+                Some(*account_index)
+            }
+            _ => None,
+        }
+    }
+
+    /// 获取自定义错误码（如果是 Custom InstructionError）
+    pub fn custom_error_code(&self) -> Option<u32> {
+        match &self.error {
+            TransactionError::InstructionError(_, InstructionError::Custom(code)) => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// 获取错误类型名称
+    pub fn error_type(&self) -> &str {
+        match &self.error {
+            TransactionError::AccountInUse => "AccountInUse",
+            TransactionError::AccountLoadedTwice => "AccountLoadedTwice",
+            TransactionError::AccountNotFound => "AccountNotFound",
+            TransactionError::ProgramAccountNotFound => "ProgramAccountNotFound",
+            TransactionError::InsufficientFundsForFee => "InsufficientFundsForFee",
+            TransactionError::InvalidAccountForFee => "InvalidAccountForFee",
+            TransactionError::AlreadyProcessed => "AlreadyProcessed",
+            TransactionError::BlockhashNotFound => "BlockhashNotFound",
+            TransactionError::InstructionError(_, inner) => match inner {
+                InstructionError::Custom(_) => "InstructionError::Custom",
+                InstructionError::InvalidAccountData => "InstructionError::InvalidAccountData",
+                InstructionError::InsufficientFunds => "InstructionError::InsufficientFunds",
+                InstructionError::BorshIoError => "InstructionError::BorshIoError",
+                InstructionError::InvalidArgument => "InstructionError::InvalidArgument",
+                _ => "InstructionError::Other",
+            },
+            TransactionError::CallChainTooDeep => "CallChainTooDeep",
+            TransactionError::SignatureFailure => "SignatureFailure",
+            TransactionError::DuplicateInstruction(_) => "DuplicateInstruction",
+            _ => "Other",
+        }
+    }
+
+    /// 获取完整的错误消息
+    pub fn error_msg(&self) -> String {
+        format!("{}", self.error)
+    }
+
     /// 是否为指令错误
     pub fn is_instruction_error(&self) -> bool {
-        self.instruction_index.is_some()
+        matches!(self.error, TransactionError::InstructionError(_, _))
     }
-    
+
     /// 是否为自定义错误（包含 custom error code）
     pub fn is_custom_error(&self) -> bool {
-        self.custom_error_code.is_some()
+        self.custom_error_code().is_some()
     }
-    
+
     /// 获取简短的错误描述（用于日志）
     pub fn short_description(&self) -> String {
-        if let Some(code) = self.custom_error_code {
-            format!("{}(0x{:X})", self.error_type, code)
-        } else if let Some(idx) = self.instruction_index {
-            format!("Ix#{}: {}", idx, self.error_type)
+        if let Some(code) = self.custom_error_code() {
+            format!("{}(0x{:X})", self.error_type(), code)
+        } else if let Some(idx) = self.instruction_index() {
+            format!("Ix#{}: {}", idx, self.error_type())
         } else {
-            self.error_type.clone()
+            self.error_type().to_string()
         }
+    }
+
+    /// 获取原始 TransactionError 的引用
+    pub fn raw_error(&self) -> &TransactionError {
+        &self.error
     }
 }
 
@@ -218,24 +200,26 @@ impl std::fmt::Display for TxConfirmError {
                 )
             }
             Self::Failed {
-                signature,
-                detail,
-                ..
+                signature, detail, ..
             } => {
-                if let Some(custom_code) = detail.custom_error_code {
+                if let Some(custom_code) = detail.custom_error_code() {
                     write!(
                         f,
                         "交易失败: {} - {} (Custom Error: 0x{:X})",
-                        signature, detail.error_type, custom_code
+                        signature,
+                        detail.error_type(),
+                        custom_code
                     )
-                } else if let Some(idx) = detail.instruction_index {
+                } else if let Some(idx) = detail.instruction_index() {
                     write!(
                         f,
                         "交易失败: {} - Instruction #{} - {}",
-                        signature, idx, detail.error_type
+                        signature,
+                        idx,
+                        detail.error_type()
                     )
                 } else {
-                    write!(f, "交易失败: {} - {}", signature, detail.error_type)
+                    write!(f, "交易失败: {} - {}", signature, detail.error)
                 }
             }
             Self::MetaMissing { signature, .. } => {
@@ -793,7 +777,7 @@ async fn subscribe_nonce_and_transaction_inner(
                             }
                             Err(err) => {
                                 info!("交易失败: {:?}, 错误: {:?}", sig, err);
-                                let detail = TxFailureDetail::from_error_debug(format!("{:?}", err));
+                                let detail = TxFailureDetail::new(err.clone());
                                 let event = tx_result_channel::TxResultEvent {
                                     signature: sig,
                                     tx: tx.clone(),
