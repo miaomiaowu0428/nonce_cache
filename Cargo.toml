@@ -13,6 +13,7 @@ grpc-client = { git = "https://github.com/miaomiaowu0428/grpc-client.git" }
 utils = { git = "https://github.com/miaomiaowu0428/sol-utils.git" }
 solana-client = "3.1.8"
 solana-sdk = "3.0.0"
+solana-transaction-status = "3.0.0"
 borsh = "1.6.0"
 futures = "0.3.31"
 yellowstone-grpc-client = "10.2.0"

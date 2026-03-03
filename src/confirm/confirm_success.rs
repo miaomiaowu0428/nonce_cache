@@ -36,13 +36,13 @@ pub async fn confirm_success_tx(
                         TradeStatus::Success { signature, tx } => return Ok((signature, tx)),
                         TradeStatus::Failed {
                             signature,
-                            error_msg,
+                            detail,
                             ..
                         } => {
                             // 只记录失败，但继续等待其他交易的成功
                             error!(
-                                "交易失败: {:?} - {}，继续等待其他交易",
-                                signature, error_msg
+                                "交易失败: {:?} - {:?}，继续等待其他交易",
+                                signature, detail
                             );
                             continue;
                         }

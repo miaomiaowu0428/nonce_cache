@@ -37,13 +37,13 @@ pub async fn confirm_tx(
                         TradeStatus::Failed {
                             signature,
                             tx,
-                            error_msg,
+                            detail,
                         } => {
-                            error!("交易失败: {:?} - {}", signature, error_msg);
+                            error!("交易失败: {:?} - {:?}", signature, detail);
                             return Err(TxConfirmError::Failed {
                                 signature,
                                 tx,
-                                error_msg,
+                                detail,
                             });
                         }
                         TradeStatus::MetaMissing { signature, tx } => {
