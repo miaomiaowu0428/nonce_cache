@@ -31,7 +31,7 @@ pub async fn confirm_tx(
             }) = tx_result_rx.recv().await
             {
                 if expected_signatures.contains(&signature) {
-                    info!("交易确认: {:?} -> {:#?}", signature, status);
+                    info!("交易确认: {:?} -> {:?}", signature, status);
                     match status {
                         TradeStatus::Success { signature, tx } => return Ok((signature, tx)),
                         TradeStatus::Failed {
