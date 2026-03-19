@@ -35,15 +35,10 @@ pub async fn confirm_success_tx(
                     match status {
                         TradeStatus::Success { signature, tx } => return Ok((signature, tx)),
                         TradeStatus::Failed {
-                            signature,
-                            detail,
-                            ..
+                            signature, detail, ..
                         } => {
                             // 只记录失败，但继续等待其他交易的成功
-                            error!(
-                                "交易失败: {:?} - {:?}，继续等待其他交易",
-                                signature, detail
-                            );
+                            error!("交易失败: {:?} - {:?}，继续等待其他交易", signature, detail);
                             continue;
                         }
                         TradeStatus::MetaMissing { signature, .. } => {

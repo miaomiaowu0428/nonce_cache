@@ -853,14 +853,21 @@ async fn setup_client() -> Result<GeyserGrpcClient<impl Interceptor>, anyhow::Er
         .parse::<u64>()
         .unwrap_or(60);
 
+    let token = env::var("YELLOWSTONE_GRPC_TOKEN").ok();
+
     info!("   Keep-Alive 间隔: {}秒", keep_alive_interval);
     info!("   Keep-Alive 超时: {}秒", keep_alive_timeout);
     info!("   连接超时: {}秒", connect_timeout);
     info!("   请求超时: {}秒", request_timeout);
+    if let Some(ref t) = token {
+        info!("   Token 认证: {}...", &t[..t.len().min(8)]);
+    } else {
+        info!("   Token 认证: 未设置（无需认证）");
+    }
 
     // Build the gRPC client with TLS config and HTTP/2 keep-alive
     let client = GeyserGrpcClient::build_from_shared(ENDPOINT.to_string())?
-        // .x_token(Some(AUTH_TOKEN.to_string()))?
+        .x_token(token)?
         .tls_config(ClientTlsConfig::new().with_native_roots())?
         // 配置 HTTP/2 keep-alive 防止 broken pipe
         .http2_keep_alive_interval(Duration::from_secs(keep_alive_interval))
