@@ -554,16 +554,24 @@ pub async fn subscribe_nonce_and_transaction(
                     return Err(e);
                 }
 
-                // 如果连续相同错误超过5次，使用更长的退避时间
-                let base_backoff = std::cmp::min(retry_count * 2, 30);
-                let backoff_secs = if consecutive_same_errors > 5 {
-                    warn!(
-                        "⚠️  检测到连续 {} 次相同错误 [{}]，延长退避时间",
-                        consecutive_same_errors, error_type
+                let backoff_secs = if connection_duration >= Duration::from_secs(60) {
+                    info!(
+                        "⏱️ 上一次连接持续 {:.2} 秒，使用 1 秒快速重连",
+                        connection_duration.as_secs_f64()
                     );
-                    std::cmp::min(base_backoff * 2, 60)
+                    1
                 } else {
-                    base_backoff
+                    // 如果连续相同错误超过5次，使用更长的退避时间
+                    let base_backoff = std::cmp::min(retry_count * 2, 30);
+                    if consecutive_same_errors > 5 {
+                        warn!(
+                            "⚠️  检测到连续 {} 次相同错误 [{}]，延长退避时间",
+                            consecutive_same_errors, error_type
+                        );
+                        std::cmp::min(base_backoff * 2, 60)
+                    } else {
+                        base_backoff
+                    }
                 };
 
                 warn!(
