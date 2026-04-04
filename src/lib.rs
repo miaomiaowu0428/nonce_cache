@@ -821,13 +821,14 @@ async fn subscribe_nonce_and_transaction_inner(
                 _ => {}
             },
             Err(error) => {
-                println!("blacklist_monitor error: {:?}", error);
-                break;
+                println!("nonce cache gRpc stream error: {:?}", error);
+                return Err(anyhow::Error::new(error).context("nonce cache gRpc stream error"));
             }
         }
     }
-
-    Ok(())
+    Err(anyhow::anyhow!(
+        "nonce cache gRpc stream ended unexpectedly"
+    ))
 }
 
 async fn setup_client() -> Result<GeyserGrpcClient<impl Interceptor>, anyhow::Error> {
