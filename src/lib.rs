@@ -469,9 +469,9 @@ pub async fn subscribe_nonce_and_transaction(
         .unwrap_or(999999);
 
     let health_check_interval = env::var("GRPC_HEALTH_CHECK_INTERVAL_SECS")
-        .unwrap_or_else(|_| "60".to_string())
+        .unwrap_or_else(|_| "10".to_string())
         .parse::<u64>()
-        .unwrap_or(60);
+        .unwrap_or(10);
 
     // 启动健康检查任务
     if health_check_interval > 0 {
@@ -610,17 +610,11 @@ async fn health_check_task(interval: Duration) {
         let seconds_since_last_msg = now_secs.saturating_sub(last_msg_time);
 
         if is_healthy {
-            if seconds_since_last_msg > 300 {
-                // 5分钟没收到消息
-                error!(
-                    "🚨 健康检查告警: 连接状态显示正常，但已 {} 秒未收到消息！",
-                    seconds_since_last_msg
-                );
-                error!("   可能原因: 订阅过滤器不匹配、网络静默、或数据流异常");
-            } else if seconds_since_last_msg > 120 {
-                // 2分钟没收到消息
+            if seconds_since_last_msg > 15 {
+                // 15秒没收到消息：标记不健康，防止基于陈旧数据下单
+                CONNECTION_HEALTHY.store(false, Ordering::Relaxed);
                 warn!(
-                    "⚠️  健康检查提醒: 已 {} 秒未收到消息",
+                    "⚠️  健康检查: 消息超时 {} 秒，标记连接不健康",
                     seconds_since_last_msg
                 );
             } else {
