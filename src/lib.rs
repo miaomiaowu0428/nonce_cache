@@ -721,13 +721,16 @@ async fn subscribe_nonce_and_transaction_inner(
 
     while let Some(message) = stream.next().await {
         // 更新最后消息时间
-        LAST_MESSAGE_TIME.store(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            Ordering::Relaxed,
-        );
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        LAST_MESSAGE_TIME.store(now_secs, Ordering::Relaxed);
+        // 连接未断但曾被健康检查标记为不健康（消息空窗），消息恢复后自动回健康
+        if !CONNECTION_HEALTHY.load(Ordering::Relaxed) {
+            CONNECTION_HEALTHY.store(true, Ordering::Relaxed);
+            info!("✅ gRPC 消息恢复，连接重新标记为健康");
+        }
 
         message_count += 1;
         TOTAL_MESSAGES.fetch_add(1, Ordering::Relaxed);
