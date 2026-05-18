@@ -22,7 +22,7 @@ use {
             atomic::{AtomicBool, AtomicU64, Ordering},
         },
     },
-    tokio::{self, sync::RwLock, time::Instant},
+    tokio::{self, time::Instant},
     tonic::{service::Interceptor, transport::ClientTlsConfig},
     utils::global_broadcast,
     yellowstone_grpc_client::GeyserGrpcClient,
@@ -380,8 +380,8 @@ struct NonceInfo {
 }
 
 // 全局缓存：key=Nonce账户Pubkey，value=该账户的hash信息
-static NONCE_CACHE: LazyLock<RwLock<HashMap<Pubkey, NonceInfo>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+static NONCE_CACHE: LazyLock<parking_lot::RwLock<HashMap<Pubkey, NonceInfo>>> =
+    LazyLock::new(|| parking_lot::RwLock::new(HashMap::new()));
 
 /// 初始化指定Nonce账户的hash缓存（不存在则创建，存在且未初始化则更新）
 async fn init_nonce(nonce_account: Pubkey) {
@@ -389,7 +389,7 @@ async fn init_nonce(nonce_account: Pubkey) {
 
     // 检查是否需要初始化：1.缓存中无该账户 2.有账户但hash都是默认值
     let need_init = {
-        let current_cache = cache.read().await;
+        let current_cache = cache.read();
         match current_cache.get(&nonce_account) {
             None => true,
             Some(info) => info.pre_hash == Hash::default() && info.cur_hash == Hash::default(),
@@ -412,7 +412,7 @@ async fn init_nonce(nonce_account: Pubkey) {
         };
 
         // 写入缓存：不存在则创建默认值，存在则更新
-        let mut cache_mut = cache.write().await;
+        let mut cache_mut = cache.write();
         let info = cache_mut.entry(nonce_account).or_default(); // 无则创建默认NonceInfo
         info.pre_hash = info.cur_hash; // 旧当前hash变为前hash
         info.cur_hash = new_hash; // 新hash作为当前hash
@@ -424,7 +424,7 @@ pub async fn get_nonce_hash(nonce_account: Pubkey) -> Hash {
     // 确保该账户已初始化（首次调用会触发链上查询，后续直接读缓存）
     init_nonce(nonce_account).await;
 
-    let cache = NONCE_CACHE.read().await;
+    let cache = NONCE_CACHE.read();
     // 因init_nonce已确保存在，unwrap安全（或用expect给出更友好错误）
     cache
         .get(&nonce_account)
@@ -437,7 +437,7 @@ pub async fn get_nonce_hash(nonce_account: Pubkey) -> Hash {
 
 /// 更新指定Nonce账户的hash（前hash = 旧当前hash，当前hash = 新传入hash）
 pub async fn update_nonce_hash(nonce_account: Pubkey, new_hash: Hash) {
-    let mut cache = NONCE_CACHE.write().await;
+    let mut cache = NONCE_CACHE.write();
     // 不存在则创建默认值，避免更新时panic
     let info = cache.entry(nonce_account).or_default();
     (info.pre_hash, info.cur_hash) = (info.cur_hash, new_hash);
@@ -929,7 +929,7 @@ async fn sync_nonce_for_every(time: Duration, nonce_accounts: Vec<Pubkey>) {
 async fn flash_nonce(account: &Pubkey, fetched_hash: Hash) {
     // 1. 获取当前缓存中的值进行初步比对
     let current_cached_hash = {
-        let cache = NONCE_CACHE.read().await;
+        let cache = NONCE_CACHE.read();
         cache
             .get(account)
             .map(|info| info.cur_hash)
