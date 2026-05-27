@@ -69,7 +69,6 @@ pub fn to_ui_amount(amount: i128, mint: &Pubkey) -> f64 {
 pub struct TokenPnL {
     pub payer: String,           // 交易账户地址
     pub quote_pnl: i128,         // 本位币盈亏
-    pub buy_cost_total: i128,    // 累计买入花费（本位币口径）
     pub sol_gas_cost: i128,      // SOL gas 总成本（稳定币本位时单独统计）
     pub quote_mint: String,      // 使用的本位币类型（存储为字符串方便序列化）
     pub success_tx_count: usize, // 成功交易次数
@@ -80,13 +79,11 @@ impl TokenPnL {
     pub fn add_success_trade(
         &mut self,
         quote_change: i128,
-        buy_cost_delta: i128,
         sol_gas: i128,
         quote_mint: Pubkey,
         payer: Pubkey,
     ) {
         self.quote_pnl += quote_change;
-        self.buy_cost_total += buy_cost_delta;
         self.sol_gas_cost += sol_gas;
         self.success_tx_count += 1;
 
@@ -373,12 +370,6 @@ async fn process_success_transaction(
         return Ok(());
     };
 
-    let base_change = self_balance_changes
-        .iter()
-        .find(|c| c.mint == base_mint)
-        .cloned()
-        .unwrap_or_default();
-
     info!(
         "💰 [PnL] 处理交易 {} | 标的: {} | 本位: {}",
         tx.signature,
@@ -400,13 +391,6 @@ async fn process_success_transaction(
         0 // SOL 本位：gas 已包含在 quote_change 中
     };
 
-    // 仅统计买入方向的花费：标的净增且本位净流出。
-    let buy_cost_delta = if base_change.change > 0 && quote_change.change < 0 {
-        -quote_change.change
-    } else {
-        0
-    };
-
     // 更新内存缓存
     {
         let mut cache = MEMORY_CACHE.write().await;
@@ -421,13 +405,7 @@ async fn process_success_transaction(
             })
         });
 
-        token_stat.add_success_trade(
-            quote_change.change,
-            buy_cost_delta,
-            sol_gas,
-            quote_mint,
-            target,
-        );
+        token_stat.add_success_trade(quote_change.change, sol_gas, quote_mint, target);
 
         let quote_mint_pubkey = token_stat.get_quote_mint().unwrap_or_default();
         info!(

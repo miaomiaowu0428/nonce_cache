@@ -1,4 +1,5 @@
-use std::{collections::HashSet, time::Duration};
+use ahash::AHashSet as HashSet;
+use std::{ time::Duration};
 
 use crate::self_balance::{set_monitored_payers, update_balances_from_tx};
 
