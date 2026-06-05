@@ -1,5 +1,5 @@
 use ahash::AHashSet as HashSet;
-use std::{ time::Duration};
+use std::time::Duration;
 
 use crate::self_balance::{set_monitored_payers, update_balances_from_tx};
 
@@ -185,6 +185,18 @@ pub enum TxConfirmError {
     },
     /// 其他错误
     Other(String),
+}
+
+impl TxConfirmError {
+    /// 从错误中提取签名（用于失败追踪）。
+    pub fn signature(&self) -> Option<&Signature> {
+        match self {
+            Self::Timeout { .. } => None,
+            Self::Failed { signature, .. } => Some(signature),
+            Self::MetaMissing { signature, .. } => Some(signature),
+            Self::Other(_) => None,
+        }
+    }
 }
 
 impl std::fmt::Display for TxConfirmError {

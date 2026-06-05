@@ -1,5 +1,5 @@
 use ahash::AHashSet as HashSet;
-use std::{ str::FromStr, sync::LazyLock};
+use std::{str::FromStr, sync::LazyLock};
 
 use grpc_client::TransactionFormat;
 use log::info;
