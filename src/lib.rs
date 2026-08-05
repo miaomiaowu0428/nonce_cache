@@ -12,8 +12,7 @@ use {
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_commitment_config::CommitmentConfig,
     solana_sdk::{
-        hash::Hash, instruction::InstructionError, pubkey::Pubkey, signature::Signature,
-        transaction::TransactionError,
+        hash::Hash, instruction::InstructionError, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
     },
     std::{
         collections::HashMap,
@@ -29,10 +28,7 @@ use {
     yellowstone_grpc_client::GeyserGrpcClient,
     yellowstone_grpc_proto::{
         geyser::{SubscribeRequestAccountsDataSlice, SubscribeRequestFilterAccounts},
-        prelude::{
-            CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions,
-            subscribe_update::UpdateOneof,
-        },
+        prelude::{CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions, subscribe_update::UpdateOneof},
     },
 };
 
@@ -42,9 +38,8 @@ pub mod self_balance;
 pub use confirm::confirm_first::confirm_tx;
 pub use confirm::confirm_success::confirm_success_tx;
 pub use pnl_tracker::{
-    PnLSummary, TokenPnL, clear_all_pnl, get_db, init_pnl_db, load_all_pnl, print_pnl_report,
-    query_all_pnl, query_payer_pnl, query_pnl_summary, query_sorted_pnl, query_token_pnl,
-    start_periodic_report, start_pnl_tracker, to_ui_amount,
+    PnLSummary, TokenPnL, clear_all_pnl, get_db, init_pnl_db, load_all_pnl, print_pnl_report, query_all_pnl, query_payer_pnl,
+    query_pnl_summary, query_sorted_pnl, query_token_pnl, start_periodic_report, start_pnl_tracker, to_ui_amount,
 };
 
 // 全局连接健康状态
@@ -91,9 +86,7 @@ impl TxFailureDetail {
             TransactionError::InstructionError(idx, _) => Some(*idx),
             TransactionError::DuplicateInstruction(idx) => Some(*idx),
             TransactionError::InsufficientFundsForRent { account_index } => Some(*account_index),
-            TransactionError::ProgramExecutionTemporarilyRestricted { account_index } => {
-                Some(*account_index)
-            }
+            TransactionError::ProgramExecutionTemporarilyRestricted { account_index } => Some(*account_index),
             _ => None,
         }
     }
@@ -179,10 +172,7 @@ pub enum TxConfirmError {
         detail: TxFailureDetail,
     },
     /// Meta 缺失：交易没有 meta 数据
-    MetaMissing {
-        signature: Signature,
-        tx: TransactionFormat,
-    },
+    MetaMissing { signature: Signature, tx: TransactionFormat },
     /// 其他错误
     Other(String),
 }
@@ -206,15 +196,9 @@ impl std::fmt::Display for TxConfirmError {
                 expected_sigs,
                 timeout_secs,
             } => {
-                write!(
-                    f,
-                    "交易超时: 等待 {}秒，期望签名: {:?}",
-                    timeout_secs, expected_sigs
-                )
+                write!(f, "交易超时: 等待 {}秒，期望签名: {:?}", timeout_secs, expected_sigs)
             }
-            Self::Failed {
-                signature, detail, ..
-            } => {
+            Self::Failed { signature, detail, .. } => {
                 if let Some(custom_code) = detail.custom_error_code() {
                     write!(
                         f,
@@ -224,13 +208,7 @@ impl std::fmt::Display for TxConfirmError {
                         custom_code
                     )
                 } else if let Some(idx) = detail.instruction_index() {
-                    write!(
-                        f,
-                        "交易失败: {} - Instruction #{} - {}",
-                        signature,
-                        idx,
-                        detail.error_type()
-                    )
+                    write!(f, "交易失败: {} - Instruction #{} - {}", signature, idx, detail.error_type())
                 } else {
                     write!(f, "交易失败: {} - {}", signature, detail.error)
                 }
@@ -337,19 +315,13 @@ const ENDPOINT: LazyLock<String> = LazyLock::new(|| {
 
 pub static JSON_RPC_CLIENT: LazyLock<Arc<RpcClient>> = LazyLock::new(|| {
     let url = env::var("JSON_RPC_URL").expect("JSON_RPC_URL not set");
-    Arc::new(RpcClient::new_with_commitment(
-        url,
-        CommitmentConfig::processed(),
-    ))
+    Arc::new(RpcClient::new_with_commitment(url, CommitmentConfig::processed()))
 });
 
 #[derive(Clone, Debug)]
 pub enum TradeStatus {
     /// 交易成功
-    Success {
-        signature: Signature,
-        tx: TransactionFormat,
-    },
+    Success { signature: Signature, tx: TransactionFormat },
     /// 交易失败：有 meta 且 status 为 Err
     Failed {
         signature: Signature,
@@ -357,10 +329,7 @@ pub enum TradeStatus {
         detail: TxFailureDetail,
     },
     /// Meta 缺失：交易没有 meta 数据
-    MetaMissing {
-        signature: Signature,
-        tx: TransactionFormat,
-    },
+    MetaMissing { signature: Signature, tx: TransactionFormat },
 }
 
 impl TradeStatus {
@@ -441,10 +410,7 @@ pub async fn get_nonce_hash(nonce_account: Pubkey) -> Hash {
     // 因init_nonce已确保存在，unwrap安全（或用expect给出更友好错误）
     cache
         .get(&nonce_account)
-        .expect(&format!(
-            "Nonce账户[{}]未初始化，请检查链上账户是否存在",
-            nonce_account
-        ))
+        .expect(&format!("Nonce账户[{}]未初始化，请检查链上账户是否存在", nonce_account))
         .cur_hash
 }
 
@@ -488,9 +454,7 @@ pub async fn subscribe_nonce_and_transaction(
 
     // 启动健康检查任务
     if health_check_interval > 0 {
-        tokio::spawn(health_check_task(Duration::from_secs(
-            health_check_interval,
-        )));
+        tokio::spawn(health_check_task(Duration::from_secs(health_check_interval)));
     }
 
     let mut retry_count = 0;
@@ -501,9 +465,7 @@ pub async fn subscribe_nonce_and_transaction(
         // 记录连接尝试时间
         let connect_start = Instant::now();
 
-        match subscribe_nonce_and_transaction_inner(nonce_accounts.clone(), payer_pubkeys.clone())
-            .await
-        {
+        match subscribe_nonce_and_transaction_inner(nonce_accounts.clone(), payer_pubkeys.clone()).await {
             Ok(_) => {
                 warn!("⚠️  gRPC 订阅正常退出（这不应该发生，可能是流自然结束）");
                 CONNECTION_HEALTHY.store(false, Ordering::Relaxed);
@@ -515,22 +477,19 @@ pub async fn subscribe_nonce_and_transaction(
 
                 // 分析错误类型
                 let error_str = format!("{:?}", e);
-                let error_type =
-                    if error_str.contains("broken pipe") || error_str.contains("BrokenPipe") {
-                        "BROKEN_PIPE"
-                    } else if error_str.contains("connection refused")
-                        || error_str.contains("ConnectionRefused")
-                    {
-                        "CONNECTION_REFUSED"
-                    } else if error_str.contains("timeout") || error_str.contains("Timeout") {
-                        "TIMEOUT"
-                    } else if error_str.contains("dns") || error_str.contains("DNS") {
-                        "DNS_ERROR"
-                    } else if error_str.contains("tls") || error_str.contains("TLS") {
-                        "TLS_ERROR"
-                    } else {
-                        "UNKNOWN"
-                    };
+                let error_type = if error_str.contains("broken pipe") || error_str.contains("BrokenPipe") {
+                    "BROKEN_PIPE"
+                } else if error_str.contains("connection refused") || error_str.contains("ConnectionRefused") {
+                    "CONNECTION_REFUSED"
+                } else if error_str.contains("timeout") || error_str.contains("Timeout") {
+                    "TIMEOUT"
+                } else if error_str.contains("dns") || error_str.contains("DNS") {
+                    "DNS_ERROR"
+                } else if error_str.contains("tls") || error_str.contains("TLS") {
+                    "TLS_ERROR"
+                } else {
+                    "UNKNOWN"
+                };
 
                 // 检测是否是相同类型的重复错误
                 if error_type == last_error_type {
@@ -542,10 +501,7 @@ pub async fn subscribe_nonce_and_transaction(
 
                 error!("🔴 gRPC 订阅异常退出");
                 error!("   错误类型: {}", error_type);
-                error!(
-                    "   连接持续时长: {:.2}秒",
-                    connection_duration.as_secs_f64()
-                );
+                error!("   连接持续时长: {:.2}秒", connection_duration.as_secs_f64());
                 error!("   连续相同错误次数: {}", consecutive_same_errors);
                 error!("   详细错误: {:?}", e);
                 error!(
@@ -626,10 +582,7 @@ async fn health_check_task(interval: Duration) {
             if seconds_since_last_msg > 15 {
                 // 15秒没收到消息：标记不健康，防止基于陈旧数据下单
                 CONNECTION_HEALTHY.store(false, Ordering::Relaxed);
-                warn!(
-                    "⚠️  健康检查: 消息超时 {} 秒，标记连接不健康",
-                    seconds_since_last_msg
-                );
+                warn!("⚠️  健康检查: 消息超时 {} 秒，标记连接不健康", seconds_since_last_msg);
             } else {
                 info!(
                     "✅ 健康检查: 连接正常 | 最后消息: {}秒前 | 总重连: {} | 总消息: {}",
@@ -660,10 +613,7 @@ async fn subscribe_nonce_and_transaction_inner(
         info!("   💰 监控 payer 账户: {}", payer);
     }
 
-    tokio::spawn(sync_nonce_for_every(
-        Duration::from_secs(30),
-        nonce_accounts.clone(),
-    ));
+    tokio::spawn(sync_nonce_for_every(Duration::from_secs(30), nonce_accounts.clone()));
     set_monitored_payers(&payer_pubkeys[..]).await;
 
     // 初始化盈亏跟踪数据库并启动跟踪器（静默失败，不影响主流程）
@@ -713,17 +663,12 @@ async fn subscribe_nonce_and_transaction_inner(
                 ..Default::default()
             },
         )]),
-        accounts_data_slice: vec![SubscribeRequestAccountsDataSlice {
-            offset: 40,
-            length: 32,
-        }],
+        accounts_data_slice: vec![SubscribeRequestAccountsDataSlice { offset: 40, length: 32 }],
         commitment: Some(CommitmentLevel::Processed.into()),
         ..Default::default()
     };
     info!("🔌 建立 gRPC 订阅流: {}", *ENDPOINT);
-    let (mut _subscribe_tx, mut stream) = client
-        .subscribe_with_request(Some(subscribe_request))
-        .await?;
+    let (mut _subscribe_tx, mut stream) = client.subscribe_with_request(Some(subscribe_request)).await?;
 
     info!("✅ gRPC 订阅流已建立，开始接收消息...");
     CONNECTION_HEALTHY.store(true, Ordering::Relaxed);
@@ -754,9 +699,10 @@ async fn subscribe_nonce_and_transaction_inner(
                     let data = account.account.clone().unwrap().data;
                     // 只处理nonce账户格式的数据，其他账户忽略
                     if let Ok(hash) = Hash::try_from_slice(&data)
-                        && let Some(account) = account.account.clone().map(|acc| {
-                            Pubkey::new_from_array(acc.pubkey[0..32].try_into().unwrap())
-                        })
+                        && let Some(account) = account
+                            .account
+                            .clone()
+                            .map(|acc| Pubkey::new_from_array(acc.pubkey[0..32].try_into().unwrap()))
                     {
                         info!("检测到 Nonce 更新 | 账户: {} | 新 Hash: {}", account, hash);
                         update_nonce_hash(account, hash).await;
@@ -767,8 +713,7 @@ async fn subscribe_nonce_and_transaction_inner(
                             error!("账户公钥长度不足32字节: {:?}", pubkey_bytes);
                             continue;
                         }
-                        let pubkey_array: [u8; 32] =
-                            pubkey_bytes[0..32].try_into().unwrap_or_default();
+                        let pubkey_array: [u8; 32] = pubkey_bytes[0..32].try_into().unwrap_or_default();
                         info!("忽略非nonce账户更新: {}", Pubkey::from(pubkey_array));
                     }
                 }
@@ -844,9 +789,7 @@ async fn subscribe_nonce_and_transaction_inner(
             }
         }
     }
-    Err(anyhow::anyhow!(
-        "nonce cache gRpc stream ended unexpectedly"
-    ))
+    Err(anyhow::anyhow!("nonce cache gRpc stream ended unexpectedly"))
 }
 
 async fn setup_client() -> Result<GeyserGrpcClient<impl Interceptor>, anyhow::Error> {
@@ -943,10 +886,7 @@ async fn flash_nonce(account: &Pubkey, fetched_hash: Hash) {
     // 1. 获取当前缓存中的值进行初步比对
     let current_cached_hash = {
         let cache = NONCE_CACHE.read();
-        cache
-            .get(account)
-            .map(|info| info.cur_hash)
-            .unwrap_or_default()
+        cache.get(account).map(|info| info.cur_hash).unwrap_or_default()
     };
 
     // 如果 fetch 到的值和缓存一致，直接跳过

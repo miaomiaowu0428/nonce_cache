@@ -34,17 +34,9 @@ pub async fn confirm_tx(
                     info!("交易确认: {:?} -> {:?}", signature, status);
                     match status {
                         TradeStatus::Success { signature, tx } => return Ok((signature, tx)),
-                        TradeStatus::Failed {
-                            signature,
-                            tx,
-                            detail,
-                        } => {
+                        TradeStatus::Failed { signature, tx, detail } => {
                             error!("交易失败: {:?} - {:?}", signature, detail);
-                            return Err(TxConfirmError::Failed {
-                                signature,
-                                tx,
-                                detail,
-                            });
+                            return Err(TxConfirmError::Failed { signature, tx, detail });
                         }
                         TradeStatus::MetaMissing { signature, tx } => {
                             error!("交易 Meta 缺失: {:?}", signature);

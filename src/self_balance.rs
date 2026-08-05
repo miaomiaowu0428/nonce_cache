@@ -11,15 +11,10 @@ pub static SELF_TOKEN_BALANCE: LazyLock<whirlwind::ShardMap<(Pubkey, Pubkey), u6
     LazyLock::new(|| whirlwind::ShardMap::with_shards(16));
 
 pub async fn self_balance_of(owner: &Pubkey, mint: &Pubkey) -> Option<u64> {
-    SELF_TOKEN_BALANCE
-        .get(&(*owner, *mint))
-        .await
-        .as_deref()
-        .copied()
+    SELF_TOKEN_BALANCE.get(&(*owner, *mint)).await.as_deref().copied()
 }
 
-pub static MONITORED_PAYERS: LazyLock<RwLock<HashSet<Pubkey>>> =
-    LazyLock::new(|| RwLock::new(HashSet::new()));
+pub static MONITORED_PAYERS: LazyLock<RwLock<HashSet<Pubkey>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
 
 // 在 subscribe_nonce_and_transaction 开始时调用
 pub async fn set_monitored_payers(payers: &[Pubkey]) {
@@ -46,10 +41,7 @@ pub async fn update_balances_from_tx(tx: &TransactionFormat) {
                     if let Ok(mint_pk) = Pubkey::from_str(&tb.mint) {
                         let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
 
-                        info!(
-                            "[余额更新] 账户: {}, Mint: {}, 新余额: {}",
-                            owner_pk, mint_pk, amount
-                        );
+                        info!("[余额更新] 账户: {}, Mint: {}, 新余额: {}", owner_pk, mint_pk, amount);
 
                         post_keys.insert((owner_pk, mint_pk));
                         SELF_TOKEN_BALANCE.insert((owner_pk, mint_pk), amount).await;

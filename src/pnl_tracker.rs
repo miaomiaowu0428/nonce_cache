@@ -76,13 +76,7 @@ pub struct TokenPnL {
 
 impl TokenPnL {
     /// 添加一笔成功交易的盈亏
-    pub fn add_success_trade(
-        &mut self,
-        quote_change: i128,
-        sol_gas: i128,
-        quote_mint: Pubkey,
-        payer: Pubkey,
-    ) {
+    pub fn add_success_trade(&mut self, quote_change: i128, sol_gas: i128, quote_mint: Pubkey, payer: Pubkey) {
         self.quote_pnl += quote_change;
         self.sol_gas_cost += sol_gas;
         self.success_tx_count += 1;
@@ -123,7 +117,18 @@ static DB: LazyLock<RwLock<Option<sled::Db>>> = LazyLock::new(|| RwLock::new(Non
 /// 初始化 sled 数据库
 pub async fn init_pnl_db(db_path: Option<PathBuf>) -> Result<(), anyhow::Error> {
     let path = db_path.unwrap_or_else(|| PathBuf::from("./data/pnl_tracker"));
-    let db = sled::open(path)?;
+    let db = match sled::open(&path) {
+        Ok(db) => db,
+        Err(e) => {
+            log::warn!(
+                "💰 [pnl_tracker] sled DB 打开失败: {} | 错误: {:?} | PnL 统计将无法启动",
+                path.display(),
+                e
+            );
+            return Err(anyhow::Error::new(e)
+                .context(format!("sled open failed: {}", path.display())));
+        }
+    };
 
     let mut db_lock = DB.write().await;
     *db_lock = Some(db);
@@ -142,11 +147,7 @@ pub async fn get_db() -> Option<sled::Db> {
 }
 
 /// 保存单个代币的盈亏数据
-async fn save_token_pnl(
-    payer: &Pubkey,
-    mint: &Pubkey,
-    pnl: &TokenPnL,
-) -> Result<(), anyhow::Error> {
+async fn save_token_pnl(payer: &Pubkey, mint: &Pubkey, pnl: &TokenPnL) -> Result<(), anyhow::Error> {
     let Some(db) = get_db().await else {
         return Err(anyhow::anyhow!("数据库未初始化"));
     };
@@ -185,19 +186,14 @@ pub async fn load_all_pnl() -> HashMap<(Pubkey, Pubkey), TokenPnL> {
                 if let Ok(key_str) = std::str::from_utf8(&key) {
                     // 解析 "payer:mint" 格式
                     if let Some((payer_str, mint_str)) = key_str.split_once(':') {
-                        if let (Ok(payer), Ok(mint)) =
-                            (payer_str.parse::<Pubkey>(), mint_str.parse::<Pubkey>())
-                        {
+                        if let (Ok(payer), Ok(mint)) = (payer_str.parse::<Pubkey>(), mint_str.parse::<Pubkey>()) {
                             match bincode::deserialize::<TokenPnL>(&value) {
                                 Ok(pnl) => {
                                     result.insert((payer, mint), pnl);
                                 }
                                 Err(e) => {
                                     corrupted_count += 1;
-                                    eprintln!(
-                                        "⚠️ 跳过损坏的 PnL 数据: payer={}, mint={}, error={}",
-                                        payer, mint, e
-                                    );
+                                    eprintln!("⚠️ 跳过损坏的 PnL 数据: payer={}, mint={}, error={}", payer, mint, e);
                                 }
                             }
                         }
@@ -234,9 +230,7 @@ pub async fn repair_pnl_db() -> Result<usize, String> {
                 // 尝试解析键
                 if let Ok(key_str) = std::str::from_utf8(&key) {
                     if let Some((payer_str, mint_str)) = key_str.split_once(':') {
-                        if let (Ok(payer), Ok(mint)) =
-                            (payer_str.parse::<Pubkey>(), mint_str.parse::<Pubkey>())
-                        {
+                        if let (Ok(payer), Ok(mint)) = (payer_str.parse::<Pubkey>(), mint_str.parse::<Pubkey>()) {
                             // 尝试反序列化值
                             if bincode::deserialize::<TokenPnL>(&value).is_err() {
                                 eprintln!("🗑️ 发现损坏的数据: payer={}, mint={}", payer, mint);
@@ -295,8 +289,7 @@ pub async fn clear_all_pnl() -> Result<(), anyhow::Error> {
 // ============ 实时统计 ============
 
 /// 内存缓存，用于快速访问（避免频繁读写 sled）
-static MEMORY_CACHE: LazyLock<RwLock<HashMap<(Pubkey, Pubkey), TokenPnL>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+static MEMORY_CACHE: LazyLock<RwLock<HashMap<(Pubkey, Pubkey), TokenPnL>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// 监控的地址列表
 static MONITORED_TARGETS: LazyLock<RwLock<Vec<Pubkey>>> = LazyLock::new(|| RwLock::new(Vec::new()));
@@ -313,16 +306,10 @@ impl GetAccounts for grpc_client::TransactionFormat {
 }
 
 /// 处理成功的交易，计算并记录盈亏
-async fn process_success_transaction(
-    tx: &grpc_client::TransactionFormat,
-    target: Pubkey,
-) -> Result<(), anyhow::Error> {
+async fn process_success_transaction(tx: &grpc_client::TransactionFormat, target: Pubkey) -> Result<(), anyhow::Error> {
     // 获取余额变化
     let balance_changes = balance_changes_of_grpc(tx)?;
-    let self_balance_changes: Vec<BalanceChange> = balance_changes
-        .into_iter()
-        .filter(|change| change.owner == target)
-        .collect();
+    let self_balance_changes: Vec<BalanceChange> = balance_changes.into_iter().filter(|change| change.owner == target).collect();
 
     // 按优先级确定本位币（quote）
     let wsol_mint: Pubkey = match WSOL.parse() {
@@ -334,15 +321,11 @@ async fn process_success_transaction(
         .find_map(|&currency| {
             // 对于 SOL，需要合并 native SOL 和 WSOL
             if currency == Pubkey::default() || currency == wsol_mint {
-                let sol_change = self_balance_changes
-                    .iter()
-                    .find(|c| c.mint == Pubkey::default());
+                let sol_change = self_balance_changes.iter().find(|c| c.mint == Pubkey::default());
                 let wsol_change = self_balance_changes.iter().find(|c| c.mint == wsol_mint);
 
                 match (sol_change, wsol_change) {
-                    (Some(sol), Some(wsol)) => sol
-                        .combine(wsol)
-                        .map(|combined| (Pubkey::default(), combined)),
+                    (Some(sol), Some(wsol)) => sol.combine(wsol).map(|combined| (Pubkey::default(), combined)),
                     (Some(sol), None) => Some((Pubkey::default(), sol.clone())),
                     (None, Some(wsol)) => Some((Pubkey::default(), wsol.clone())),
                     (None, None) => None,
@@ -383,9 +366,7 @@ async fn process_success_transaction(
     // 计算 gas 成本（仅稳定币本位时需要单独统计）
     let sol_gas = if !is_sol_based {
         // 稳定币本位：统计 SOL 的消耗作为 gas
-        let sol_change = self_balance_changes
-            .iter()
-            .find(|c| c.mint == Pubkey::default());
+        let sol_change = self_balance_changes.iter().find(|c| c.mint == Pubkey::default());
         sol_change.map(|c| c.change).unwrap_or(0)
     } else {
         0 // SOL 本位：gas 已包含在 quote_change 中
@@ -397,11 +378,8 @@ async fn process_success_transaction(
         let token_stat = cache.entry((target, base_mint)).or_insert_with(|| {
             // 尝试从数据库加载
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    load_token_pnl(&target, &base_mint)
-                        .await
-                        .unwrap_or_default()
-                })
+                tokio::runtime::Handle::current()
+                    .block_on(async { load_token_pnl(&target, &base_mint).await.unwrap_or_default() })
             })
         });
 
@@ -446,10 +424,8 @@ pub async fn start_pnl_tracker(targets: Vec<Pubkey>) {
         }
 
         // 从数据库加载历史数据到内存缓存（静默失败）
-        if let Ok(historical_data) = tokio::task::spawn_blocking(|| {
-            tokio::runtime::Handle::current().block_on(load_all_pnl())
-        })
-        .await
+        if let Ok(historical_data) =
+            tokio::task::spawn_blocking(|| tokio::runtime::Handle::current().block_on(load_all_pnl())).await
         {
             if !historical_data.is_empty() {
                 if let Ok(mut cache) = MEMORY_CACHE.try_write() {
@@ -469,9 +445,7 @@ pub async fn start_pnl_tracker(targets: Vec<Pubkey>) {
 
                 if let Ok(monitored) = MONITORED_TARGETS.try_read() {
                     // 找到第一个匹配的监控地址
-                    if let Some(target) =
-                        monitored.iter().find(|&&addr| tx_accounts.contains(&addr))
-                    {
+                    if let Some(target) = monitored.iter().find(|&&addr| tx_accounts.contains(&addr)) {
                         // 静默处理错误，不影响后续交易
                         if let Err(e) = process_success_transaction(&event.tx, *target).await {
                             log::warn!("💰 [PnL] 处理交易失败 {}: {:?}", event.tx.signature, e);
@@ -499,10 +473,7 @@ pub async fn start_periodic_report(interval_secs: u64) {
         loop {
             interval.tick().await;
             // 静默打印报告，错误不影响循环
-            let _ = tokio::task::spawn_blocking(|| {
-                tokio::runtime::Handle::current().block_on(print_pnl_report())
-            })
-            .await;
+            let _ = tokio::task::spawn_blocking(|| tokio::runtime::Handle::current().block_on(print_pnl_report())).await;
         }
     });
 }
@@ -526,13 +497,7 @@ pub async fn query_payer_pnl(payer: &Pubkey) -> HashMap<Pubkey, TokenPnL> {
     let cache = MEMORY_CACHE.read().await;
     cache
         .iter()
-        .filter_map(|((p, mint), pnl)| {
-            if p == payer {
-                Some((*mint, pnl.clone()))
-            } else {
-                None
-            }
-        })
+        .filter_map(|((p, mint), pnl)| if p == payer { Some((*mint, pnl.clone())) } else { None })
         .collect()
 }
 
@@ -559,10 +524,7 @@ pub async fn query_pnl_summary() -> PnLSummary {
         }
 
         // 按本位币汇总
-        *summary
-            .total_by_quote
-            .entry(pnl.quote_mint.clone())
-            .or_insert(0) += pnl.quote_pnl;
+        *summary.total_by_quote.entry(pnl.quote_mint.clone()).or_insert(0) += pnl.quote_pnl;
     }
 
     summary

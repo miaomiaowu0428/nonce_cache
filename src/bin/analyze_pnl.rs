@@ -1,6 +1,6 @@
 use nonce_cache::{
-    TokenPnL, init_pnl_db, pnl_tracker::repair_pnl_db, print_pnl_report, query_all_pnl,
-    query_pnl_summary, query_sorted_pnl, to_ui_amount,
+    TokenPnL, init_pnl_db, pnl_tracker::repair_pnl_db, print_pnl_report, query_all_pnl, query_pnl_summary, query_sorted_pnl,
+    to_ui_amount,
 };
 use solana_sdk::pubkey::Pubkey;
 use std::env;
@@ -71,9 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = init_pnl_db(Some(db_path.clone())).await {
         eprintln!("❌ 无法打开数据库: {}", e);
         eprintln!("请确保路径正确: {}", db_path.display());
-        eprintln!(
-            "💡 提示：如果数据库损坏，可以尝试运行: cargo run --bin analyze_pnl -- --repair [路径]"
-        );
+        eprintln!("💡 提示：如果数据库损坏，可以尝试运行: cargo run --bin analyze_pnl -- --repair [路径]");
         return Err(e.into());
     }
 
@@ -95,10 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let filtered_count = all_pnl.len();
-    println!(
-        "✅ 过滤后数据: {} 个代币（最小交易数: {}）",
-        filtered_count, min_tx_count
-    );
+    println!("✅ 过滤后数据: {} 个代币（最小交易数: {}）", filtered_count, min_tx_count);
 
     if all_pnl.is_empty() {
         println!("⚠️  过滤后没有符合条件的代币");
@@ -116,8 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let summary = calculate_summary(&all_pnl);
 
     // 按本位币分组统计
-    let mut by_quote: std::collections::HashMap<String, (usize, i128, i128)> =
-        std::collections::HashMap::new();
+    let mut by_quote: std::collections::HashMap<String, (usize, i128, i128)> = std::collections::HashMap::new();
 
     for (_, pnl) in all_pnl.iter() {
         let entry = by_quote.entry(pnl.quote_mint.clone()).or_insert((0, 0, 0));
@@ -200,9 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         0.0
     };
 
-    let even_count = summary
-        .total_tokens
-        .saturating_sub(summary.win_count + summary.loss_count);
+    let even_count = summary.total_tokens.saturating_sub(summary.win_count + summary.loss_count);
 
     println!("盈利代币: {} 个", summary.win_count);
     println!("亏损代币: {} 个", summary.loss_count);
@@ -246,9 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // 手动计算汇总（不依赖内存缓存）
-fn calculate_summary(
-    all_pnl: &std::collections::HashMap<(Pubkey, Pubkey), TokenPnL>,
-) -> nonce_cache::PnLSummary {
+fn calculate_summary(all_pnl: &std::collections::HashMap<(Pubkey, Pubkey), TokenPnL>) -> nonce_cache::PnLSummary {
     use std::collections::HashMap;
 
     let mut summary = nonce_cache::PnLSummary {
@@ -267,10 +257,7 @@ fn calculate_summary(
         }
 
         // 按本位币汇总
-        *summary
-            .total_by_quote
-            .entry(pnl.quote_mint.clone())
-            .or_insert(0) += pnl.quote_pnl;
+        *summary.total_by_quote.entry(pnl.quote_mint.clone()).or_insert(0) += pnl.quote_pnl;
     }
 
     summary
