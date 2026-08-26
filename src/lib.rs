@@ -422,6 +422,23 @@ pub async fn update_nonce_hash(nonce_account: Pubkey, new_hash: Hash) {
     (info.pre_hash, info.cur_hash) = (info.cur_hash, new_hash);
 }
 
+/// PnL 持久化开关：默认开启（向后兼容，pumpswap-snipe 等仍用 sled PnL）。
+///
+/// trade-helm（oracle/runner）已改用独立的 LMDB PnL crate，通过
+/// [`set_pnl_enabled`] 关闭 sled PnL，避免 oracle/runner 双进程抢
+/// `./data/pnl_tracker` 的文件锁（sled 单进程独占，第二个 open 直接 WouldBlock）。
+static PNL_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// 设置 PnL 持久化开关（trade-helm oracle/runner 启动时调用，关闭 sled PnL）。
+pub fn set_pnl_enabled(v: bool) {
+    PNL_ENABLED.store(v, Ordering::Relaxed);
+}
+
+/// 当前 PnL 持久化开关状态。
+fn pnl_enabled() -> bool {
+    PNL_ENABLED.load(Ordering::Relaxed)
+}
+
 pub async fn subscribe_nonce_and_transaction(
     nonce_accounts: Vec<Pubkey>,
     payer_pubkeys: Vec<Pubkey>,
@@ -616,10 +633,15 @@ async fn subscribe_nonce_and_transaction_inner(
     tokio::spawn(sync_nonce_for_every(Duration::from_secs(30), nonce_accounts.clone()));
     set_monitored_payers(&payer_pubkeys[..]).await;
 
-    // 初始化盈亏跟踪数据库并启动跟踪器（静默失败，不影响主流程）
+    // 初始化盈亏跟踪数据库并启动跟踪器（默认开启；trade-helm 已改走 LMDB PnL，
+    // 通过 set_pnl_enabled(false) 关闭 sled PnL，避免双进程抢 ./data/pnl_tracker 锁）
     tokio::spawn({
         let payer_pubkeys = payer_pubkeys.clone();
         async move {
+            if !pnl_enabled() {
+                info!("[nonce_cache] PnL 持久化已关闭（由外部 LMDB PnL 接管），跳过 sled PnL");
+                return;
+            }
             if pnl_tracker::init_pnl_db(None).await.is_ok() {
                 // 启动盈亏跟踪器，监控所有 payer
                 tokio::spawn(pnl_tracker::start_pnl_tracker(payer_pubkeys));
