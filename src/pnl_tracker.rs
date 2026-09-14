@@ -299,9 +299,20 @@ pub trait GetAccounts {
     fn accounts(&self) -> Vec<Pubkey>;
 }
 
+/// 取交易的签名（solana 4.x：`TransactionFormat` 不再直接暴露 `signature`）。
+///
+/// 取签名列表第一条 —— 即 fee payer 的签名，也是链上标识这笔交易的 sig。
+fn tx_signature(tx: &grpc_client::TransactionFormat) -> solana_sdk::signature::Signature {
+    tx.transaction.signatures.first().copied().unwrap_or_default()
+}
+
 impl GetAccounts for grpc_client::TransactionFormat {
     fn accounts(&self) -> Vec<Pubkey> {
-        self.account_keys.clone()
+        // solana 4.x：`TransactionFormat` 不再直接暴露 `account_keys`，
+        // 改为从 `utils::tx_parse` 的统一解析产物取（已含 ALT 加载的地址）。
+        utils::tx_parse::parse_grpc_tx(self)
+            .map(|p| p.account_keys)
+            .unwrap_or_default()
     }
 }
 
@@ -349,13 +360,13 @@ async fn process_success_transaction(tx: &grpc_client::TransactionFormat, target
         }
     }) else {
         // 没有找到标的币，可能是纯转账或其他操作，跳过
-        info!("💰 [PnL] 跳过交易 {} (无标的币)", tx.signature);
+        info!("💰 [PnL] 跳过交易 {} (无标的币)", tx_signature(tx));
         return Ok(());
     };
 
     info!(
         "💰 [PnL] 处理交易 {} | 标的: {} | 本位: {}",
-        tx.signature,
+        tx_signature(tx),
         base_mint,
         quote_name(&quote_mint)
     );
@@ -441,14 +452,16 @@ pub async fn start_pnl_tracker(targets: Vec<Pubkey>) {
             // 只处理成功的交易
             if event.status.success() {
                 // 从交易的账户列表中找出被监控的地址
-                let tx_accounts = &event.tx.account_keys;
+                let tx_accounts = &utils::tx_parse::parse_grpc_tx(&event.tx)
+                    .map(|p| p.account_keys)
+                    .unwrap_or_default();
 
                 if let Ok(monitored) = MONITORED_TARGETS.try_read() {
                     // 找到第一个匹配的监控地址
                     if let Some(target) = monitored.iter().find(|&&addr| tx_accounts.contains(&addr)) {
                         // 静默处理错误，不影响后续交易
                         if let Err(e) = process_success_transaction(&event.tx, *target).await {
-                            log::warn!("💰 [PnL] 处理交易失败 {}: {:?}", event.tx.signature, e);
+                            log::warn!("💰 [PnL] 处理交易失败 {}: {:?}", tx_signature(&event.tx), e);
                         }
                     }
                 }

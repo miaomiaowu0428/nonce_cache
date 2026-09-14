@@ -23,7 +23,7 @@ use {
         },
     },
     tokio::{self, time::Instant},
-    tonic::{service::Interceptor, transport::ClientTlsConfig},
+    tonic::transport::ClientTlsConfig,
     utils::global_broadcast,
     yellowstone_grpc_client::GeyserGrpcClient,
     yellowstone_grpc_proto::{
@@ -676,6 +676,8 @@ async fn subscribe_nonce_and_transaction_inner(
                 owner: vec![],
                 filters: vec![],
                 nonempty_txn_signature: None,
+                // yellowstone-grpc-proto 12.x 新增字段，不使用。
+                cuckoo_accounts_filter: None,
             },
         )]),
         transactions: HashMap::from([(
@@ -742,7 +744,7 @@ async fn subscribe_nonce_and_transaction_inner(
                 // 监听交易
                 Some(UpdateOneof::Transaction(tnx)) => {
                     let tx: TransactionFormat = tnx.into();
-                    let sig = tx.signature;
+                    let sig = tx.transaction.signatures.first().copied().unwrap_or_default();
                     info!("检测到交易: {}", sig);
 
                     match &tx.meta {
@@ -814,7 +816,8 @@ async fn subscribe_nonce_and_transaction_inner(
     Err(anyhow::anyhow!("nonce cache gRpc stream ended unexpectedly"))
 }
 
-async fn setup_client() -> Result<GeyserGrpcClient<impl Interceptor>, anyhow::Error> {
+// yellowstone-grpc-client 13.x：`GeyserGrpcClient` 不再带泛型参数（拦截器类型已固定）。
+async fn setup_client() -> Result<GeyserGrpcClient, anyhow::Error> {
     info!("🔌 正在连接 gRPC 端点: {}", &*ENDPOINT);
 
     let keep_alive_interval = env::var("GRPC_KEEP_ALIVE_INTERVAL_SECS")
