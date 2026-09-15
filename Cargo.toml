@@ -11,8 +11,8 @@ ahash = "0.8"
 log = "0.4"
 env_logger = "0.11.9"
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros"] }
-grpc-client = { git = "https://github.com/miaomiaowu0428/grpc-client.git", branch = "supportV1" }
-utils = { git = "https://github.com/miaomiaowu0428/sol-utils.git", branch = "supportV1" }
+grpc-client = { git = "https://github.com/miaomiaowu0428/grpc-client.git", branch = "main" }
+utils = { git = "https://github.com/miaomiaowu0428/sol-utils.git", branch = "main" }
 solana-client = "4.2.2"
 solana-sdk = "4.0.0"
 solana-transaction-status = { version = "4.2.2", features = ["agave-unstable-api"] }
