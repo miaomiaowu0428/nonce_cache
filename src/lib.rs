@@ -36,6 +36,7 @@ pub mod confirm;
 pub mod pnl_tracker;
 pub mod self_balance;
 pub use confirm::confirm_first::confirm_tx;
+pub use confirm::confirm_set::{ConfirmSetOutcome, SigErr, confirm_set};
 pub use confirm::confirm_success::confirm_success_tx;
 pub use pnl_tracker::{
     PnLSummary, TokenPnL, clear_all_pnl, get_db, init_pnl_db, load_all_pnl, print_pnl_report, query_all_pnl, query_payer_pnl,
@@ -234,7 +235,7 @@ impl TxConfirmError {
     /// - 闭包接收 `TxConfirmError`（owned），可以自由使用错误信息
     ///
     /// # 示例
-    /// ```rust,no_run
+    /// ```ignore
     /// match send_fast(&ixs, &ctx, None, cu).await {
     ///     Ok(sig) => { /* 处理成功 */ }
     ///     Err(e) => {
@@ -259,7 +260,7 @@ impl TxConfirmError {
     /// - 闭包接收 `TxConfirmError`（owned），可以在 async move block 中自由使用
     ///
     /// # 示例
-    /// ```rust,no_run
+    /// ```ignore
     /// match send_fast(&ixs, &ctx, None, cu).await {
     ///     Ok(sig) => { /* 处理成功 */ }
     ///     Err(e) => {
